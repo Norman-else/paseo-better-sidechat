@@ -1,61 +1,122 @@
 # paseo-better-sidechat
 
-专为 Paseo 打造的 **通用 AI 侧边聊天（Universal Sidechat）** 插件：在右侧栏（Explorer）随时就当前代码、报错、架构权衡向任意 Paseo 已启用的模型（Claude、Codex、GitHub Copilot、OpenCode、Kimi、Antigravity、MiniMax、Cursor 及自定义 ACP 服务商）提问，不打断主线编码任务、不污染主会话上下文，并完整复用 Paseo 底部输入栏设计与全局设置。
+A **Universal AI Sidechat** plugin for [Paseo](https://paseo.sh) (`>= 0.16.0`). Ask side questions, cross-check architecture decisions with a second model, inspect logs/MCP data, or unpack errors in Paseo's right-hand panel—without interrupting a running main agent turn or polluting your primary conversation context.
+
+Built to feel 100% native to Paseo: pixel-aligned composer geometry, universal multi-provider support, `@files` / `/commands` / `/skills` autocomplete, native `+` attachments, live Paseo settings sync, and automatic hosting of third-party Paseo timeline rendering plugins (such as `Gen-UI`).
 
 ---
 
-## 功能亮点
+## Features
 
-1. **全服务商通用模型支持（Universal Providers & Models）**
-   - 自动发现 Paseo 主机上已启用的所有内置与自定义 ACP / 插件服务商及可选模型。
-   - 默认自动继承当前主会话正在使用的服务商、模型、权限模式与思考强度；也可在侧边底部胶囊中随时跨服务商自由切换（如主会话跑 Claude，侧边切 Codex 或 Kimi 做交叉验证）。
-   - 动态适配各服务商原生官方 SVG 图标、专属权限模式（Claude / Codex / Copilot / OpenCode / OMP 等）以及扩展控制项（如 Claude `⚡` Fast Mode 开关）。
+### 1. Universal Multi-Provider & Full MCP Tool Support
+- **All Paseo Providers**: Automatically discovers every enabled built-in and custom ACP/plugin provider on the host (`Claude`, `Codex`, `GitHub Copilot`, `OpenCode`, `Kimi`, `Antigravity`, `MiniMax`, `Cursor`, and custom ACP providers).
+- **Smart Defaults, Instant Switching**: Inherits your active main session's provider, model, thinking effort, permission mode, and configured MCP servers by default—or lets you switch to another provider/model directly from the sidechat toolbar to get a second opinion.
+- **Provider-Native Controls**: Renders official provider icons, provider-specific permission modes, thinking effort levels, and dynamic option controls (such as Claude `⚡` Fast Mode).
 
-2. **多入口秒开侧边聊天**
-   - **主输入框快捷按钮（Composer Pill）**：在主会话输入框底部点击「侧边聊天」一键展开右侧面板。
-   - **斜杠命令 `/btw [问题]` 与 `/sidechat [问题]`**：直接在主会话输入框输入 `/btw`（仅打开侧边面板）或 `/btw 为什么这里用 WeakMap？`（打开右侧侧边聊天并立即发送提问），支持多轮追问且不污染主会话历史。
-   - **命令面板（Command Center）**：支持 `打开侧边聊天`、`新建侧边聊天` 与 `工作区侧边聊天`（搜索 `btw` 亦可直达）。
+### 2. Native Paseo Composer Experience
+- **1:1 Paseo Composer Layout**: Matches Paseo's `ComposerDock` and `MessageInput` geometry (`116px` resting desktop card, dynamic multiline auto-expand, toolbar overhang alignment, `borderAccent` styling, and `contentMaxWidth`).
+- **Native `+` Attachment Menu**:
+  - **Add image** (file picker + direct clipboard image paste)
+  - **Add issue or PR / MR** (auto-detects GitHub, GitLab, Gitea, Forgejo, and Codeberg repositories with live search)
+  - **Plugin Attachment Sources** (automatically loads installed Paseo attachment plugins, e.g., `Attach Jira ticket` from `paseo-jira`)
+  - **Upload file**
+- **`@files`, `/commands`, and `/skills` Autocomplete**:
+  - Fuzzy workspace file & directory tagging via `@`
+  - Provider slash commands at prompt start (`/`) and inline `/skills` anywhere in your message
+  - Built-in client commands: `/new`, `/clear`, `/archive`, and `/exit`
+- **Context Window & Quota Popover**: Click the circular context usage ring to inspect token usage, session cost, provider rate-limit bars, and reset countdowns.
 
-3. **主会话上下文同步 & 划词引用 & 结论回传**
-   - **主会话上下文摘要**：默认在新侧边对话首轮自动提取主会话最近若干轮问答、修改/读取的文件与报错信息（支持预览完整摘要，或通过 `+` 菜单 / 顶部胶囊随时开关）。
-   - **跨面板划词引用**：在主聊天记录或代码 Diff 中选中文本后，侧边输入框会自动浮现「引用选中内容」快捷胶囊，一键附带代码或报错片段。
-   - **只读安全保护 & 一键回传**：内置非破坏性系统提示词约束，避免擅自修改主会话正在编辑的文件；讨论得出的结论支持一键「插入主输入框」或「发给主会话」。
+### 3. Automatic Hosting of Paseo Timeline Plugins
+- **Zero Hardcoded Renderers**: Dynamically discovers and evaluates `addTimelineTransformer` and `addTimelineRenderer` contributions from any other plugin installed on the active Paseo host (for example, rendering `Card`, `Diagram`, `Table`, and `Callout` blocks via `Gen-UI`, as well as any rendering plugins you install in the future).
+- **Streaming & Error Isolation**: Supports both `streaming` and `complete` transformation phases, forwards plugin-scoped `useRpc` / `useSettings` / `useTranslation` calls to their owning plugin, and wraps third-party renderers in an `ErrorBoundary` with automatic Markdown fallback.
 
-4. **完全适配 Paseo 内置设置与底部 UI（实时响应、无需重载）**
-   - **原生底部工具栏**：1:1 对齐 Paseo 主会话底部的圆角浮层卡片、`+` 附件上下文菜单、官方服务商图标模型胶囊、思考强度胶囊、盾牌模式胶囊、扩展开关、上下文窗口进度环与圆形发送/停止按钮。
-   - **多语言与主题字体同步**：完整内置 Paseo 全部 9 种界面语言（简中、英、日、韩、西、法、葡、俄、阿），完全跟随当前主题、UI 字体、等宽代码字体与字号。
-   - **思考与折叠同步**：实时跟随 **「始终展开推理」(`autoExpandReasoning`)**、**「聊天显示」(`collapseTurns` / `collapseToolCalls` / `full`)**、**对话大纲跳转 (`chatOutlineEnabled`)** 及 **发送快捷键 (`Enter` / `⌘+Enter`)**。
+### 4. Main Session Context, Cross-Pane Quote & Handoff
+- **Main Session Context Digest**: Optionally attaches a concise digest of recent main-session turns and touched files on the first turn of a new sidechat (with a full preview modal and one-click toggle).
+- **Cross-Pane Quote Selection**: Highlighting code or logs in the main chat or diff view surfaces a `+ Quote selection` pill above the sidechat composer for one-click quoting.
+- **One-Click Handoff Back to Main**: Every completed sidechat response includes `Copy`, `Insert to main` (inserts into the main composer), and `Send to main` (sends directly to the main agent), plus `Open as main tab` from the thread switcher.
+
+### 5. Fast Entry Points
+- **Composer Pill**: Click `Sidechat` right above the main chat composer.
+- **Slash Commands**: Run `/btw [question]` or `/sidechat [question]` directly in the main chat composer to open Sidechat (and immediately submit `[question]` if provided) without sending anything to the main thread.
+- **Command Center**: Search `Sidechat` or `btw` (`Open Sidechat`, `New Sidechat`, `Workspace Sidechat`).
+
+### 6. Live Paseo Settings & 9-Language i18n
+- **Real-Time Settings Sync**: Automatically tracks Paseo's active theme (dark, light, and custom plugin themes), UI & monospace fonts/sizes, `autoExpandReasoning`, `chatDisplay` (`collapseTurns`, `collapseToolCalls`, `full`), `chatOutlineEnabled`, `sendShortcut` (`Enter` vs `Cmd/Ctrl+Enter`), and `sendBehavior` (`steer` vs `interrupt`).
+- **9 Built-in Languages**: Full localization for `en`, `zh-CN`, `ja`, `ko`, `es`, `fr`, `pt-BR`, `ru`, and `ar`.
 
 ---
 
-## 安装与开发
+## Requirements
 
-确保 Paseo 中已开启 **Settings → Plugins → Enable plugins**。
+- **Paseo** `>= 0.16.0`
+- Enable plugins in Paseo: **Settings → Plugins → Enable plugins**
 
-### 从 GitHub 直接安装
+---
+
+## Installation & Updating
+
+`paseo-better-sidechat` has zero external runtime dependencies beyond Paseo's built-in plugin host modules, so it installs cleanly on both local machines and headless Linux VPS hosts without requiring `npm install`.
+
+### Install from GitHub
 
 ```bash
 paseo plugin add git:Norman-else/paseo-better-sidechat
-
-# 后续更新插件
-paseo plugin update paseo-better-sidechat
 ```
 
-### 本地开发与调试
+### Update an Existing Installation
+
+> Note: Pass the installed plugin ID (`paseo-better-sidechat`), not the `git:...` URL.
 
 ```bash
-# 安装依赖与运行校验
+paseo plugin update paseo-better-sidechat --yes
+```
+
+### Target a Remote Paseo Daemon (Optional)
+
+If you run Paseo against a remote SSH/TCP daemon, run the commands above on that host directly or pass `--host <endpoint>`:
+
+```bash
+paseo plugin --host <host:port> add git:Norman-else/paseo-better-sidechat
+paseo plugin --host <host:port> update paseo-better-sidechat --yes
+```
+
+---
+
+## Configuration
+
+Open **Settings → Plugins → Better Sidechat** inside Paseo to customize:
+
+- **Main context mode**: `Auto on first message` (default), `Always attach`, or `Manual only`
+- **Recent main turns to summarize**: `2` – `12` turns (default `6`)
+- **Default permission mode**: `Inherit main session` (default), `Read-only / Plan`, or `Auto / Default`
+- **Inherit main session model**: Automatically match the main agent's provider and model (default `true`)
+- **Show Sidechat button in main composer**: Toggle the `Sidechat` shortcut pill above the main composer
+
+---
+
+## Local Development
+
+```bash
+# Install dev dependencies for local typechecking and unit tests
 npm install
+
+# Run TypeScript typecheck and test suite
 npm run typecheck
 npm test
 
-# 安装本地插件目录到 Paseo
-paseo plugin install /Users/normanzuo/PersonalRepos/paseo-better-sidechat
+# Install local checkout into your local Paseo daemon
+paseo plugin install .
 
-# 查看运行状态与日志
-paseo plugin ls
+# Inspect plugin status and logs
+paseo plugin ls paseo-better-sidechat
 paseo plugin logs paseo-better-sidechat
 
-# 修改代码后热重载插件（无需重启 Paseo daemon）
+# Hot-reload after making changes (no daemon restart required)
 paseo plugin reload paseo-better-sidechat
 ```
+
+---
+
+## License
+
+MIT
