@@ -18,6 +18,7 @@ import {
   preferencesRpc,
   searchAttachmentSourceRpc,
   slashCommandsRpc,
+  starterSuggestionsRpc,
   updateThreadRpc,
   uploadFileRpc,
   usageReportsRpc,
@@ -37,6 +38,16 @@ import {
   sidechatSettings,
   type SidechatSettingsValues,
 } from "./shared/settings";
+import {
+  buildAiStarterGenerationPrompt,
+  buildContextualStarterPrompts,
+  buildDefaultStarterPrompts,
+  computeMainStarterFingerprint,
+  detectConversationLanguage,
+  parseAiStarterResponse,
+  STARTER_GENERATOR_SYSTEM_PROMPT,
+  type StarterPromptItem,
+} from "./shared/starters";
 import { SidechatAttachmentService } from "./server/attachments";
 import { SidechatThreadStore } from "./server/thread-store";
 
@@ -150,6 +161,79 @@ async function resolveProviderAndModel(input: {
   }
 
   throw new Error("No available AI model provider found on this Paseo host.");
+}
+
+function pickFastStarterModel(input: {
+  entries: ProviderSnapshotEntry[];
+  preferredProvider?: string | null;
+  preferredModel?: string | null;
+}): {
+  provider: string;
+  model: string;
+  providerModel: string;
+  thinkingOptionId?: string;
+  providerEntry: ProviderSnapshotEntry | null;
+} | null {
+  const fastModelPattern = /\b(haiku|mini|nano|flash|fast|instant|small|lite)\b/i;
+  const lowThinkingPattern = /^(off|none|disabled|minimal|low)$/i;
+
+  const chooseFromEntry = (
+    entry: ProviderSnapshotEntry,
+    fallbackModelId?: string | null,
+  ) => {
+    const selectable = (entry.models ?? []).filter((m) => m.isSelectable !== false);
+    if (selectable.length === 0 && !fallbackModelId) return null;
+
+    const fastMatch = selectable.find(
+      (m) => fastModelPattern.test(m.id) || fastModelPattern.test(m.label || ""),
+    );
+    const preferredMatch = fallbackModelId
+      ? selectable.find((m) => m.id === fallbackModelId)
+      : undefined;
+    const defaultMatch = selectable.find((m) => m.isDefault) ?? selectable[0];
+    const chosen = fastMatch ?? preferredMatch ?? defaultMatch;
+    const modelId = chosen?.id ?? fallbackModelId;
+    if (!modelId) return null;
+
+    const lowThinking = (chosen?.thinkingOptions ?? []).find(
+      (opt) => lowThinkingPattern.test(opt.id) || lowThinkingPattern.test(opt.label || ""),
+    );
+
+    return {
+      provider: entry.provider,
+      model: modelId,
+      providerModel: `${entry.provider}/${modelId}`,
+      thinkingOptionId: lowThinking?.id,
+      providerEntry: entry,
+    };
+  };
+
+  if (input.preferredProvider) {
+    const preferredEntry = input.entries.find(
+      (e) => e.provider === input.preferredProvider && e.enabled !== false,
+    );
+    if (preferredEntry) {
+      const picked = chooseFromEntry(preferredEntry, input.preferredModel);
+      if (picked) return picked;
+    }
+  }
+
+  for (const entry of input.entries) {
+    if (entry.enabled === false) continue;
+    const picked = chooseFromEntry(entry, null);
+    if (picked) return picked;
+  }
+
+  if (input.preferredProvider && input.preferredModel) {
+    return {
+      provider: input.preferredProvider,
+      model: input.preferredModel,
+      providerModel: `${input.preferredProvider}/${input.preferredModel}`,
+      providerEntry: null,
+    };
+  }
+
+  return null;
 }
 
 function resolvePaseoCliBin(): string {
@@ -309,6 +393,20 @@ export default function contribute(server: PluginServerContext) {
   const attachmentService = new SidechatAttachmentService(resolvePaseoCliBin);
   let cachedUsageAtMs = 0;
   let cachedUsageCards: UsageReportCardData[] | null = null;
+  const aiStarterCache = new Map<string, StarterPromptItem[]>();
+  const inFlightAiStarters = new Map<string, Promise<StarterPromptItem[] | null>>();
+
+  const rememberAiStarters = (key: string, items: StarterPromptItem[]) => {
+    if (aiStarterCache.has(key)) {
+      aiStarterCache.delete(key);
+    }
+    aiStarterCache.set(key, items);
+    while (aiStarterCache.size > 60) {
+      const oldest = aiStarterCache.keys().next().value;
+      if (oldest === undefined) break;
+      aiStarterCache.delete(oldest);
+    }
+  };
 
   const readSettings = async (): Promise<SidechatSettingsValues> => {
     try {
@@ -754,6 +852,230 @@ export default function contribute(server: PluginServerContext) {
   server.handle(invokeExternalPluginRpc, async ({ pluginId, method, params }) => ({
     output: await attachmentService.invokeExternalPlugin({ pluginId, method, params }),
   }));
+
+  server.handle(
+    starterSuggestionsRpc,
+    async (
+      { agentId, workspaceId, locale, mode, forceRefresh },
+      { paseo },
+    ): Promise<{
+      starters: StarterPromptItem[];
+      source: "default" | "contextual" | "ai";
+      canRefineWithAi: boolean;
+      cacheKey: string | null;
+    }> => {
+      try {
+        const timeline = await paseo.agents.ref(agentId).timeline.refetch({
+          direction: "tail",
+          limit: 120,
+        });
+
+        if (timeline.error || !timeline.agent) {
+          return {
+            starters: buildDefaultStarterPrompts(locale),
+            source: "default",
+            canRefineWithAi: false,
+            cacheKey: null,
+          };
+        }
+
+        const hasMessages = timeline.entries.some(
+          (e) =>
+            (e.item.type === "user_message" && e.item.text.trim().length > 0) ||
+            (e.item.type === "assistant_message" && e.item.text.trim().length > 0),
+        );
+
+        if (!hasMessages) {
+          return {
+            starters: buildDefaultStarterPrompts(locale),
+            source: "default",
+            canRefineWithAi: false,
+            cacheKey: null,
+          };
+        }
+
+        const cacheKey = computeMainStarterFingerprint(
+          agentId,
+          timeline.agent.status,
+          timeline.entries,
+        );
+
+        if (!forceRefresh) {
+          const cached = aiStarterCache.get(cacheKey);
+          if (cached && cached.length > 0) {
+            rememberAiStarters(cacheKey, cached);
+            return {
+              starters: cached,
+              source: "ai",
+              canRefineWithAi: false,
+              cacheKey,
+            };
+          }
+        }
+
+        const contextual = buildContextualStarterPrompts({
+          title: timeline.agent.title,
+          status: timeline.agent.status,
+          entries: timeline.entries,
+          fallbackLocale: locale,
+        });
+
+        if (mode === "instant") {
+          return {
+            starters: contextual,
+            source: "contextual",
+            canRefineWithAi: true,
+            cacheKey,
+          };
+        }
+
+        const generateWithFastModel = async (): Promise<StarterPromptItem[] | null> => {
+          const effectiveCwd = timeline.agent!.cwd || homedir();
+          const mainWorkspaceId = timeline.agent!.workspaceId ?? null;
+          const providerEntries = await loadProviderEntries(paseo, effectiveCwd);
+          const picked = pickFastStarterModel({
+            entries: providerEntries,
+            preferredProvider: timeline.agent!.provider,
+            preferredModel: timeline.agent!.model,
+          });
+          if (!picked) return null;
+
+          const resolvedModeId = resolveEffectiveProviderMode({
+            provider: picked.provider,
+            defaultPermissionMode: "plan",
+            availableModes: picked.providerEntry?.modes,
+            providerDefaultModeId: picked.providerEntry?.defaultModeId,
+          });
+
+          const digestObj = buildMainContextDigest({
+            agentId,
+            title: timeline.agent!.title,
+            provider: timeline.agent!.provider,
+            model: timeline.agent!.model,
+            cwd: effectiveCwd,
+            status: timeline.agent!.status,
+            entries: timeline.entries,
+            maxTurns: 5,
+          });
+          const { languageTag } = detectConversationLanguage(timeline.entries, locale);
+          const prompt = buildAiStarterGenerationPrompt({
+            digest: digestObj.digest,
+            languageTag,
+          });
+
+          let tempHandle: Awaited<ReturnType<ServerPaseoApi["agents"]["create"]>> | null = null;
+          let tempWorkspaceId: string | null = null;
+
+          try {
+            tempHandle = await paseo.agents.create({
+              cwd: effectiveCwd,
+              background: true,
+              autoArchive: true,
+              title: "Sidechat Follow-up Suggestions",
+              labels: {
+                "paseo-better-sidechat.ephemeral": "starters",
+              },
+              config: {
+                provider: picked.providerModel,
+                ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
+                ...(picked.thinkingOptionId ? { thinkingOptionId: picked.thinkingOptionId } : {}),
+                mcpServers: {},
+                ...(picked.provider === "claude"
+                  ? { options: { extraArgs: { "strict-mcp-config": null } } }
+                  : {}),
+                systemPrompt: STARTER_GENERATOR_SYSTEM_PROMPT,
+              },
+              prompt,
+            });
+
+            tempWorkspaceId = tempHandle.current()?.workspaceId ?? tempHandle.workspaceId ?? null;
+            const finished = await tempHandle.waitForFinish(16_000);
+            let rawText = finished.lastMessage?.trim() ?? "";
+
+            if (!rawText) {
+              const tail = await tempHandle.timeline
+                .refetch({ direction: "tail", limit: 10 })
+                .catch(() => null);
+              if (tail && !tail.error) {
+                for (let i = tail.entries.length - 1; i >= 0; i--) {
+                  const item = tail.entries[i]?.item;
+                  if (item?.type === "assistant_message" && item.text.trim()) {
+                    rawText = item.text.trim();
+                    break;
+                  }
+                }
+              }
+            }
+
+            const parsed = rawText ? parseAiStarterResponse(rawText) : null;
+            if (!parsed || parsed.length === 0) return null;
+
+            // Pad to 4 items using non-duplicate contextual items if the model returned 2–3.
+            const merged = [...parsed];
+            for (const item of contextual) {
+              if (merged.length >= 4) break;
+              if (!merged.some((m) => m.title === item.title)) {
+                merged.push(item);
+              }
+            }
+            return merged.slice(0, 4);
+          } catch {
+            return null;
+          } finally {
+            if (tempHandle) {
+              const finalWsId =
+                tempHandle.current()?.workspaceId ?? tempHandle.workspaceId ?? tempWorkspaceId;
+              await tempHandle.archive().catch(() => {});
+              if (
+                finalWsId &&
+                finalWsId !== workspaceId &&
+                finalWsId !== mainWorkspaceId
+              ) {
+                await paseo.workspaces
+                  .ref(finalWsId)
+                  .archive()
+                  .catch(() => {});
+              }
+            }
+          }
+        };
+
+        let aiPromise = !forceRefresh ? inFlightAiStarters.get(cacheKey) : undefined;
+        if (!aiPromise) {
+          const promiseKey = forceRefresh ? `${cacheKey}:refresh:${Date.now()}` : cacheKey;
+          aiPromise = generateWithFastModel().finally(() => {
+            inFlightAiStarters.delete(promiseKey);
+          });
+          inFlightAiStarters.set(promiseKey, aiPromise);
+        }
+
+        const aiItems = await aiPromise;
+        if (aiItems && aiItems.length > 0) {
+          rememberAiStarters(cacheKey, aiItems);
+          return {
+            starters: aiItems,
+            source: "ai",
+            canRefineWithAi: false,
+            cacheKey,
+          };
+        }
+
+        return {
+          starters: contextual,
+          source: "contextual",
+          canRefineWithAi: false,
+          cacheKey,
+        };
+      } catch {
+        return {
+          starters: buildDefaultStarterPrompts(locale),
+          source: "default",
+          canRefineWithAi: false,
+          cacheKey: null,
+        };
+      }
+    },
+  );
 
   server.addHook("workspace.archive.after", async ({ workspace }, { paseo }) => {
     const archivedIds = await store.archiveWorkspace(workspace.id);

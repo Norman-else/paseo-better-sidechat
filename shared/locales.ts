@@ -33,6 +33,9 @@ const ja: LocaleTable = {
   starterComparePrompt: "よりシンプルで堅牢な代替設計はありますか？それぞれのトレードオフを教えてください。",
   starterTraceTitle: "呼び出しフローを追跡",
   starterTracePrompt: "現在作業中のコード周辺のデータフローと呼び出し経路を整理してください。",
+  suggestedFollowUpsTitle: "メイン会話からの深掘り質問",
+  generatingStarters: "質問候補を生成中…",
+  refreshStarters: "質問候補を再生成",
 
   mainContextAuto: "メイン文脈 · 初回自動",
   mainContextAttached: "メイン文脈 · オン",
@@ -208,6 +211,9 @@ const ko: LocaleTable = {
   starterComparePrompt: "더 간결하거나 안정적인 대안 설계가 있을까요? 각 장단점을 비교해 주세요.",
   starterTraceTitle: "호출 흐름 추적",
   starterTracePrompt: "현재 작업 중인 코드 주변의 전체 데이터 흐름과 호출 체인을 정리해 주세요.",
+  suggestedFollowUpsTitle: "메인 대화 기반 추천 후속 질문",
+  generatingStarters: "후속 질문 생성 중…",
+  refreshStarters: "추천 질문 새로고침",
 
   mainContextAuto: "메인 문맥 · 첫 질문 자동",
   mainContextAttached: "메인 문맥 · 켜짐",
@@ -383,6 +389,9 @@ const es: LocaleTable = {
   starterComparePrompt: "¿Qué diseños alternativos más simples o limpios existen aquí y cuáles son sus ventajas y desventajas?",
   starterTraceTitle: "Rastrear flujo de llamadas",
   starterTracePrompt: "Traza el flujo de datos y llamadas de extremo a extremo alrededor del código actual.",
+  suggestedFollowUpsTitle: "Preguntas sugeridas de la sesión principal",
+  generatingStarters: "Generando sugerencias…",
+  refreshStarters: "Regenerar sugerencias",
 
   mainContextAuto: "Contexto · Auto",
   mainContextAttached: "Contexto · Activo",
@@ -558,6 +567,9 @@ const fr: LocaleTable = {
   starterComparePrompt: "Quelles architectures alternatives plus simples existent ici et quels sont leurs compromis ?",
   starterTraceTitle: "Tracer le flux d’appels",
   starterTracePrompt: "Tracez le flux de données et d’appels de bout en bout autour du code en cours.",
+  suggestedFollowUpsTitle: "Questions de suivi suggérées",
+  generatingStarters: "Génération des questions…",
+  refreshStarters: "Actualiser les suggestions",
 
   mainContextAuto: "Contexte · Auto",
   mainContextAttached: "Contexte · Activé",
@@ -733,6 +745,9 @@ const ptBR: LocaleTable = {
   starterComparePrompt: "Quais designs alternativos mais limpos ou simples existem aqui e quais são seus trade-offs?",
   starterTraceTitle: "Rastrear fluxo de chamadas",
   starterTracePrompt: "Rastreie o fluxo completo de dados e chamadas ao redor do código em andamento.",
+  suggestedFollowUpsTitle: "Perguntas de acompanhamento sugeridas",
+  generatingStarters: "Gerando sugestões…",
+  refreshStarters: "Atualizar sugestões",
 
   mainContextAuto: "Contexto · Auto",
   mainContextAttached: "Contexto · Ativo",
@@ -908,6 +923,9 @@ const ru: LocaleTable = {
   starterComparePrompt: "Какие более простые или чистые альтернативные решения здесь возможны и каковы их компромиссы?",
   starterTraceTitle: "Проследить цепочку вызовов",
   starterTracePrompt: "Проследите сквозной поток данных и цепочку вызовов вокруг текущего кода.",
+  suggestedFollowUpsTitle: "Уточняющие вопросы по основной сессии",
+  generatingStarters: "Подбор вопросов…",
+  refreshStarters: "Обновить подсказки",
 
   mainContextAuto: "Контекст · Авто",
   mainContextAttached: "Контекст · Вкл",
@@ -1083,6 +1101,9 @@ const ar: LocaleTable = {
   starterComparePrompt: "ما هي التصاميم البديلة الأبسط أو الأنظف هنا وما مقايضاتها؟",
   starterTraceTitle: "تتبع مسار الاستدعاء",
   starterTracePrompt: "تتبع تدفق البيانات وسلسلة الاستدعاءات حول الكود الحالي.",
+  suggestedFollowUpsTitle: "أسئلة متابعة مقترحة من الجلسة الرئيسية",
+  generatingStarters: "جارٍ توليد الأسئلة…",
+  refreshStarters: "تحديث الاقتراحات",
 
   mainContextAuto: "السياق الرئيسي · تلقائي",
   mainContextAttached: "السياق الرئيسي · مفعّل",

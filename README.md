@@ -31,6 +31,7 @@ Built to feel 100% native to Paseo: pixel-aligned composer geometry, universal m
 - **Streaming & Error Isolation**: Supports both `streaming` and `complete` transformation phases, forwards plugin-scoped `useRpc` / `useSettings` / `useTranslation` calls to their owning plugin, and wraps third-party renderers in an `ErrorBoundary` with automatic Markdown fallback.
 
 ### 4. Main Session Context, Cross-Pane Quote & Handoff
+- **Dynamic Follow-Up Starter Suggestions**: Opening a new sidechat thread automatically generates 4 contextual follow-up questions in the main conversation's language—instantly surfacing open design dilemmas, remaining tasks, touched files/tickets, and AI-tailored follow-ups with one-click refresh.
 - **Main Session Context Digest**: Optionally attaches a concise digest of recent main-session turns and touched files on the first turn of a new sidechat (with a full preview modal and one-click toggle).
 - **Cross-Pane Quote Selection**: Highlighting code or logs in the main chat or diff view surfaces a `+ Quote selection` pill above the sidechat composer for one-click quoting.
 - **One-Click Handoff Back to Main**: Every completed sidechat response includes `Copy`, `Insert to main` (inserts into the main composer), and `Send to main` (sends directly to the main agent), plus `Open as main tab` from the thread switcher.

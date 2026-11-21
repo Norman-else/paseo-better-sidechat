@@ -68,12 +68,17 @@ import {
   listThreadsRpc,
   mainContextRpc,
   type SidechatThread,
+  starterSuggestionsRpc,
   updateThreadRpc,
 } from "../shared/contracts";
 import {
   DEFAULT_SIDECHAT_SETTINGS,
   sidechatSettings,
 } from "../shared/settings";
+import {
+  buildDefaultStarterPrompts,
+  type StarterPromptItem,
+} from "../shared/starters";
 import {
   appendOptimisticUserMessage,
   applyTimelinePluginsToItems,
@@ -236,6 +241,7 @@ function SidechatSurface({
   const callCreateThread = useRpc(createThreadRpc);
   const callUpdateThread = useRpc(updateThreadRpc);
   const callMainContext = useRpc(mainContextRpc);
+  const callStarterSuggestions = useRpc(starterSuggestionsRpc);
 
   const threadsQueryKey = useMemo(
     () => ["sidechat-threads", host.id, workspaceId, mainAgentId ?? "workspace"] as const,
@@ -1350,34 +1356,132 @@ function SidechatSurface({
   const shortcutLabel =
     appearance.sendShortcut === "mod-enter" ? t("modEnterShortcut") : t("enterShortcut");
 
-  const starterItems = useMemo(
-    () => [
-      {
-        id: "explain",
-        icon: "BookOpen",
-        title: t("starterExplainTitle"),
-        prompt: t("starterExplainPrompt"),
-      },
-      {
-        id: "edge",
-        icon: "ShieldAlert",
-        title: t("starterEdgeCasesTitle"),
-        prompt: t("starterEdgeCasesPrompt"),
-      },
-      {
-        id: "compare",
-        icon: "GitCompareArrows",
-        title: t("starterCompareTitle"),
-        prompt: t("starterComparePrompt"),
-      },
-      {
-        id: "trace",
-        icon: "Workflow",
-        title: t("starterTraceTitle"),
-        prompt: t("starterTracePrompt"),
-      },
-    ],
-    [t],
+  // Track when the active main agent finishes a turn (`running` -> `idle`) so empty-state
+  // follow-up suggestions automatically update without spamming mid-stream deltas.
+  const prevMainStatusRef = useRef<string | null>(null);
+  const [mainTurnSettleEpoch, setMainTurnSettleEpoch] = useState(0);
+  useEffect(() => {
+    const nextStatus = mainAgent?.status ?? null;
+    if (prevMainStatusRef.current === "running" && nextStatus && nextStatus !== "running") {
+      setMainTurnSettleEpoch((v) => v + 1);
+    }
+    prevMainStatusRef.current = nextStatus;
+  }, [mainAgent?.status]);
+
+  const isEmptyStarterView = !activeSideAgentId && projectedRows.length === 0 && !loadingTimeline;
+
+  const instantStartersQuery = useQuery({
+    queryKey: [
+      "sidechat-starters-instant",
+      host.id,
+      mainAgentId,
+      mainTurnSettleEpoch,
+      locale,
+    ] as const,
+    enabled: Boolean(mainAgentId && isEmptyStarterView),
+    staleTime: 15_000,
+    queryFn: () =>
+      callStarterSuggestions({
+        agentId: mainAgentId!,
+        workspaceId,
+        locale,
+        mode: "instant",
+        forceRefresh: false,
+      }),
+  });
+
+  const starterCacheKey = instantStartersQuery.data?.cacheKey ?? null;
+
+  const aiStartersQuery = useQuery({
+    queryKey: ["sidechat-starters-ai", host.id, mainAgentId, starterCacheKey, locale] as const,
+    enabled: Boolean(
+      mainAgentId &&
+        isEmptyStarterView &&
+        starterCacheKey &&
+        instantStartersQuery.data?.canRefineWithAi,
+    ),
+    staleTime: 5 * 60_000,
+    queryFn: () =>
+      callStarterSuggestions({
+        agentId: mainAgentId!,
+        workspaceId,
+        locale,
+        mode: "ai",
+        forceRefresh: false,
+      }),
+  });
+
+  const [manualStarterOverride, setManualStarterOverride] = useState<{
+    agentId: string;
+    cacheKey: string | null;
+    starters: StarterPromptItem[];
+  } | null>(null);
+  const [refreshingStarters, setRefreshingStarters] = useState(false);
+
+  const handleRefreshStarters = useCallback(async () => {
+    if (!mainAgentId || refreshingStarters) return;
+    setRefreshingStarters(true);
+    try {
+      const refreshed = await callStarterSuggestions({
+        agentId: mainAgentId,
+        workspaceId,
+        locale,
+        mode: "ai",
+        forceRefresh: true,
+      });
+      setManualStarterOverride({
+        agentId: mainAgentId,
+        cacheKey: refreshed.cacheKey ?? starterCacheKey,
+        starters: refreshed.starters,
+      });
+    } catch {
+      // Keep existing starters on transient failure.
+    } finally {
+      setRefreshingStarters(false);
+    }
+  }, [
+    mainAgentId,
+    refreshingStarters,
+    callStarterSuggestions,
+    workspaceId,
+    locale,
+    starterCacheKey,
+  ]);
+
+  const defaultStarterItems = useMemo(() => buildDefaultStarterPrompts(locale), [locale]);
+
+  const starterItems = useMemo<StarterPromptItem[]>(() => {
+    if (
+      manualStarterOverride &&
+      manualStarterOverride.agentId === mainAgentId &&
+      manualStarterOverride.cacheKey === starterCacheKey &&
+      manualStarterOverride.starters.length > 0
+    ) {
+      return manualStarterOverride.starters;
+    }
+    if (aiStartersQuery.data?.starters && aiStartersQuery.data.starters.length > 0) {
+      return aiStartersQuery.data.starters;
+    }
+    if (instantStartersQuery.data?.starters && instantStartersQuery.data.starters.length > 0) {
+      return instantStartersQuery.data.starters;
+    }
+    return defaultStarterItems;
+  }, [
+    manualStarterOverride,
+    mainAgentId,
+    starterCacheKey,
+    aiStartersQuery.data?.starters,
+    instantStartersQuery.data?.starters,
+    defaultStarterItems,
+  ]);
+
+  const hasContextualMainStarters = Boolean(
+    mainAgentId &&
+      ((instantStartersQuery.data && instantStartersQuery.data.source !== "default") ||
+        aiStartersQuery.data),
+  );
+  const isTailoringStarters = Boolean(
+    mainAgentId && (aiStartersQuery.isFetching || refreshingStarters),
   );
 
   const selectedModelLabel = currentModelDef?.label || effectiveModelId || null;
@@ -1622,6 +1726,62 @@ function SidechatSurface({
             </View>
 
             <View style={{ gap: 6 }}>
+              {(hasContextualMainStarters || isTailoringStarters) ? (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    paddingHorizontal: 2,
+                    marginBottom: 2,
+                  }}
+                >
+                  <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    {isTailoringStarters ? (
+                      <Spinner size={11} color={colors.accent} label={t("generatingStarters")} />
+                    ) : (
+                      <Icon name="Sparkles" size={11} color={colors.accent} />
+                    )}
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        flexShrink: 1,
+                        fontSize: Math.max(11, appearance.uiBaseFontSize - 1),
+                        color: colors.foregroundMuted,
+                      }}
+                    >
+                      {isTailoringStarters
+                        ? t("generatingStarters")
+                        : t("suggestedFollowUpsTitle")}
+                    </Text>
+                  </View>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("refreshStarters")}
+                    disabled={isTailoringStarters}
+                    onPress={() => {
+                      void handleRefreshStarters();
+                    }}
+                    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                      {
+                        width: 24,
+                        height: 24,
+                        borderRadius: 6,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        opacity: isTailoringStarters ? 0.45 : 1,
+                        backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
+                      },
+                      pointerCursorStyle,
+                    ]}
+                  >
+                    <Icon name="RotateCw" size={12} color={colors.foregroundMuted} />
+                  </Pressable>
+                </View>
+              ) : null}
+
               {starterItems.map((starter) => (
                 <Pressable
                   key={starter.id}
@@ -1632,9 +1792,9 @@ function SidechatSurface({
                   }}
                   style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
                     {
-                      minHeight: compact ? 42 : 34,
+                      minHeight: compact ? 42 : 36,
                       paddingHorizontal: 11,
-                      paddingVertical: 7,
+                      paddingVertical: 8,
                       borderRadius: 8,
                       borderWidth: 1,
                       borderColor: colors.border,
@@ -1648,10 +1808,11 @@ function SidechatSurface({
                 >
                   <Icon name={starter.icon} size={14} color={colors.accent} />
                   <Text
-                    numberOfLines={1}
+                    numberOfLines={2}
                     style={{
                       flex: 1,
                       fontSize: appearance.uiBaseFontSize,
+                      lineHeight: Math.round(appearance.uiBaseFontSize * 1.38),
                       color: colors.foreground,
                     }}
                   >

@@ -40,6 +40,9 @@ export const en = {
   starterTraceTitle: "Trace call flow",
   starterTracePrompt:
     "Trace the end-to-end data and call flow around the code currently being worked on.",
+  suggestedFollowUpsTitle: "Follow-ups from main chat",
+  generatingStarters: "Tailoring follow-ups…",
+  refreshStarters: "Refresh follow-up suggestions",
 
   // Context & Selection
   mainContextAuto: "Main context · Auto",
@@ -232,6 +235,9 @@ export const zh: LocaleTable = {
   starterComparePrompt: "针对当前需求，有没有更简洁或更稳健的替代方案？各自有什么优缺点？",
   starterTraceTitle: "梳理完整调用链",
   starterTracePrompt: "帮我梳理当前涉及模块从入口到核心逻辑的完整数据流与调用链。",
+  suggestedFollowUpsTitle: "基于主会话的追问建议",
+  generatingStarters: "正在结合主会话生成追问…",
+  refreshStarters: "重新生成追问建议",
 
   // Context & Selection
   mainContextAuto: "主会话上下文 · 首轮自动",

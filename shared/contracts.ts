@@ -7,6 +7,7 @@ import {
 } from "./attachments";
 import { slashCommandItemSchema, workspaceFileEntrySchema } from "./autocomplete";
 import { sidechatSettingsSchema } from "./settings";
+import { starterPromptItemSchema } from "./starters";
 
 export const preferencesRpc = defineRpc({
   name: "sidechat.preferences.get",
@@ -284,5 +285,22 @@ export const invokeExternalPluginRpc = defineRpc({
   }),
   output: z.object({
     output: z.unknown(),
+  }),
+});
+
+export const starterSuggestionsRpc = defineRpc({
+  name: "sidechat.starters.suggest",
+  input: z.object({
+    agentId: z.string().min(1),
+    workspaceId: z.string().optional(),
+    locale: z.string().default("en"),
+    mode: z.enum(["instant", "ai"]).default("instant"),
+    forceRefresh: z.boolean().default(false),
+  }),
+  output: z.object({
+    starters: z.array(starterPromptItemSchema),
+    source: z.enum(["default", "contextual", "ai"]),
+    canRefineWithAi: z.boolean(),
+    cacheKey: z.string().nullable(),
   }),
 });
