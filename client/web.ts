@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Platform, type ViewStyle } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Platform, type TextStyle, type ViewStyle } from "react-native";
 import {
   DEFAULT_WEB_MONO_FONT,
   parseHostAppearanceSettings,
@@ -34,6 +34,7 @@ declare const window:
       localStorage: { getItem(key: string): string | null };
       addEventListener(type: string, listener: (event: DomEvent) => void, capture?: boolean): void;
       removeEventListener(type: string, listener: (event: DomEvent) => void, capture?: boolean): void;
+      getComputedStyle?(el: object): Record<string, string>;
       getSelection(): {
         isCollapsed: boolean;
         toString(): string;
@@ -42,13 +43,25 @@ declare const window:
     }
   | undefined;
 
+type WebMirrorTextareaElement = {
+  rows: number;
+  readOnly: boolean;
+  value: string;
+  scrollHeight: number;
+  style: Record<string, string>;
+  setAttribute(name: string, value: string): void;
+  remove?(): void;
+};
+
 declare const document:
   | {
       documentElement: object;
       body?: {
-        appendChild(el: WebFileInputElement): void;
-        removeChild(el: WebFileInputElement): void;
+        appendChild(el: WebFileInputElement | WebMirrorTextareaElement): void;
+        removeChild(el: WebFileInputElement | WebMirrorTextareaElement): void;
       };
+      createElement(tag: "input"): WebFileInputElement;
+      createElement(tag: "textarea"): WebMirrorTextareaElement;
       createElement(tag: string): WebFileInputElement;
     }
   | undefined;
@@ -454,5 +467,114 @@ export function composerPasteImageProps(
         if (valid.length > 0) onPasteImages(valid);
       });
     },
+  };
+}
+
+export const PASEO_COMPOSER_WEB_MIN_HEIGHT = 46;
+export const PASEO_COMPOSER_NATIVE_MIN_HEIGHT = 30;
+export const PASEO_COMPOSER_MAX_HEIGHT = 200;
+
+/**
+ * Matches Paseo's `useComposerHeight` (`ie = Platform.OS === "web" ? 46 : 30`):
+ * - Resting height on Web is an exact 46px (`minHeight: 46`), matching Paseo's native `MessageInput`.
+ * - Smoothly auto-expands up to `maxHeight` (200px) when multiline text exceeds 46px, and resets
+ *   immediately to 46px when the draft is cleared.
+ */
+export function useComposerInputSizing(input: {
+  value: string;
+  surfaceWidth: number;
+  contentFontSize: number;
+  lineHeight: number;
+}): { style: TextStyle; scrollEnabled: boolean } {
+  const [webHeight, setWebHeight] = useState(PASEO_COMPOSER_WEB_MIN_HEIGHT);
+  const mirrorRef = useRef<WebMirrorTextareaElement | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined" || !document.body) {
+      return;
+    }
+    const mirror = document.createElement("textarea");
+    mirror.setAttribute("aria-hidden", "true");
+    mirror.setAttribute("tabindex", "-1");
+    mirror.readOnly = true;
+    mirror.rows = 1;
+    Object.assign(mirror.style, {
+      position: "absolute",
+      top: "0",
+      left: "0",
+      visibility: "hidden",
+      pointerEvents: "none",
+      overflow: "hidden",
+      border: "0",
+      margin: "0",
+      padding: "0",
+      resize: "none",
+      zIndex: "-1",
+      boxSizing: "border-box",
+      whiteSpace: "pre-wrap",
+      overflowWrap: "break-word",
+    });
+    document.body.appendChild(mirror);
+    mirrorRef.current = mirror;
+    return () => {
+      if (mirror.remove) {
+        mirror.remove();
+      } else {
+        try {
+          document.body?.removeChild(mirror);
+        } catch {
+          // Ignore if already detached
+        }
+      }
+      mirrorRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!input.value) {
+      setWebHeight(PASEO_COMPOSER_WEB_MIN_HEIGHT);
+      return;
+    }
+    const mirror = mirrorRef.current;
+    if (!mirror || input.surfaceWidth <= 0) return;
+
+    if (typeof window !== "undefined" && window.getComputedStyle && document?.body) {
+      const bodyComputed = window.getComputedStyle(document.body);
+      if (bodyComputed.fontFamily) {
+        mirror.style.fontFamily = bodyComputed.fontFamily;
+      }
+    }
+    mirror.style.width = `${Math.max(80, Math.floor(input.surfaceWidth))}px`;
+    mirror.style.fontSize = `${input.contentFontSize}px`;
+    mirror.style.lineHeight = `${input.lineHeight}px`;
+    mirror.value = input.value.endsWith("\n") ? `${input.value} ` : input.value;
+
+    const raw = mirror.scrollHeight || PASEO_COMPOSER_WEB_MIN_HEIGHT;
+    const clamped = Math.max(
+      PASEO_COMPOSER_WEB_MIN_HEIGHT,
+      Math.min(PASEO_COMPOSER_MAX_HEIGHT, Math.ceil(raw)),
+    );
+    setWebHeight((prev) => (Math.abs(prev - clamped) < 1 ? prev : clamped));
+  }, [input.value, input.surfaceWidth, input.contentFontSize, input.lineHeight]);
+
+  if (Platform.OS !== "web") {
+    return {
+      style: {
+        minHeight: PASEO_COMPOSER_NATIVE_MIN_HEIGHT,
+        maxHeight: 160,
+      },
+      scrollEnabled: true,
+    };
+  }
+
+  const resolvedHeight = input.value ? webHeight : PASEO_COMPOSER_WEB_MIN_HEIGHT;
+  return {
+    style: {
+      height: resolvedHeight,
+      minHeight: PASEO_COMPOSER_WEB_MIN_HEIGHT,
+      maxHeight: PASEO_COMPOSER_MAX_HEIGHT,
+    },
+    scrollEnabled: resolvedHeight >= PASEO_COMPOSER_MAX_HEIGHT,
   };
 }

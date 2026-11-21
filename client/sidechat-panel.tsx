@@ -1647,9 +1647,12 @@ function SidechatSurface({
             keyExtractor={(item) => item.id}
             style={[{ flex: 1 }, stableScrollbarStyle]}
             contentContainerStyle={{
-              paddingHorizontal: 12,
+              width: "100%",
+              maxWidth: appearance.contentMaxWidth,
+              alignSelf: "center",
+              paddingHorizontal: 16,
               paddingTop: 10,
-              paddingBottom: 14,
+              paddingBottom: 16,
               gap: 4,
             }}
             onScroll={handleScroll}

@@ -14,6 +14,8 @@ test("parseHostAppearanceSettings matches Paseo defaults when storage is empty",
   assert.equal(settings.chatOutlineEnabled, true);
   assert.equal(settings.uiBaseFontSize, 13);
   assert.equal(settings.contentFontSize, 14);
+  assert.equal(settings.composerLineHeight, 19.6);
+  assert.equal(settings.contentMaxWidth, 820);
   assert.equal(settings.codeFontSize, 12);
   assert.equal(settings.sendShortcut, "enter");
   assert.equal(settings.sendBehavior, "steer");
@@ -27,6 +29,7 @@ test("parseHostAppearanceSettings honors explicit thinking, collapse, and font s
     monoFontFamily: "'JetBrains Mono', Menlo, monospace",
     uiBaseFontSize: 15,
     contentFontSize: 16,
+    contentMaxWidth: 960,
     codeFontSize: 14,
     sendShortcut: "mod-enter",
     sendBehavior: "interrupt",
@@ -38,6 +41,8 @@ test("parseHostAppearanceSettings honors explicit thinking, collapse, and font s
   assert.equal(settings.monoFontFamily, "'JetBrains Mono', Menlo, monospace");
   assert.equal(settings.uiBaseFontSize, 15);
   assert.equal(settings.contentFontSize, 16);
+  assert.equal(settings.composerLineHeight, 22.4);
+  assert.equal(settings.contentMaxWidth, 960);
   assert.equal(settings.codeFontSize, 14);
   assert.equal(settings.sendShortcut, "mod-enter");
   assert.equal(settings.sendBehavior, "interrupt");
@@ -81,4 +86,23 @@ test("isDarkSurface and deriveSidechatPalette adapt across dark and light Paseo 
   });
   assert.equal(lightPalette.dark, false);
   assert.match(lightPalette.userBubbleBg, /^#[0-9a-f]{6}$/);
+  assert.match(lightPalette.borderAccent, /^#[0-9a-f]{6}$/);
+  assert.match(lightPalette.foregroundExtraMuted, /^#[0-9a-f]{6}$/);
+
+  const darkPalette = deriveSidechatPalette({
+    surface0: "#18181b",
+    surface1: "#1f1f22",
+    surface2: "#27272a",
+    border: "#27272a",
+    foreground: "#e4e4e7",
+    foregroundMuted: "#a1a1aa",
+    accent: "#e4e4e7",
+    accentForeground: "#18181b",
+    statusSuccess: "#16a34a",
+    statusWarning: "#d97706",
+    statusDanger: "#dc2626",
+  });
+  assert.equal(darkPalette.dark, true);
+  assert.equal(darkPalette.borderAccent, "#303033");
+  assert.match(darkPalette.foregroundExtraMuted, /^#[0-9a-f]{6}$/);
 });

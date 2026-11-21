@@ -8,11 +8,15 @@ export type SendShortcutMode = "enter" | "mod-enter";
 export type SendBehaviorMode = "interrupt" | "steer" | "queue";
 export type UsageDisplayAs = "used" | "remaining";
 
+export const DEFAULT_CONTENT_MAX_WIDTH = 820;
+
 export interface HostAppearanceSettings {
   monoFontFamily: string;
   uiBaseFontSize: number;
   contentFontSize: number;
   contentLineHeight: number;
+  composerLineHeight: number;
+  contentMaxWidth: number;
   codeFontSize: number;
   codeLineHeight: number;
   autoExpandReasoning: boolean;
@@ -26,6 +30,8 @@ export interface HostAppearanceSettings {
 
 export interface DerivedPalette {
   dark: boolean;
+  borderAccent: string;
+  foregroundExtraMuted: string;
   userBubbleBg: string;
   userBubbleBorder: string;
   thoughtBg: string;
@@ -79,6 +85,10 @@ export function parseHostAppearanceSettings(
   const uiBaseFontSize = clampInt(record.uiBaseFontSize ?? legacyUiScale, 10, 21, defaultUiBase);
   const contentFontSize = clampInt(record.contentFontSize, 10, 21, record.uiBaseFontSize !== undefined ? uiBaseFontSize : defaultContent);
   const codeFontSize = clampInt(record.codeFontSize, 9, 22, 12);
+  const contentMaxWidth =
+    record.contentMaxWidth === null || record.contentMaxWidth === undefined
+      ? DEFAULT_CONTENT_MAX_WIDTH
+      : clampInt(record.contentMaxWidth, 500, 2400, DEFAULT_CONTENT_MAX_WIDTH);
 
   const autoExpandReasoning = typeof record.autoExpandReasoning === "boolean" ? record.autoExpandReasoning : false;
 
@@ -120,6 +130,8 @@ export function parseHostAppearanceSettings(
     uiBaseFontSize,
     contentFontSize,
     contentLineHeight: Math.round(contentFontSize * 1.45),
+    composerLineHeight: Math.round(contentFontSize * 14) / 10,
+    contentMaxWidth,
     codeFontSize,
     codeLineHeight: Math.round(codeFontSize * 1.48),
     autoExpandReasoning,
@@ -137,6 +149,7 @@ export function sameHostAppearance(a: HostAppearanceSettings, b: HostAppearanceS
     a.monoFontFamily === b.monoFontFamily &&
     a.uiBaseFontSize === b.uiBaseFontSize &&
     a.contentFontSize === b.contentFontSize &&
+    a.contentMaxWidth === b.contentMaxWidth &&
     a.codeFontSize === b.codeFontSize &&
     a.autoExpandReasoning === b.autoExpandReasoning &&
     a.chatDisplay === b.chatDisplay &&
@@ -204,6 +217,10 @@ export function deriveSidechatPalette(colors: PluginTheme["colors"]): DerivedPal
   const dark = isDarkSurface(colors.surface0);
   return {
     dark,
+    borderAccent: dark
+      ? mixColor(colors.foreground, colors.border, 0.05)
+      : mixColor(colors.surface0, colors.border, 0.35),
+    foregroundExtraMuted: mixColor(colors.foregroundMuted, colors.surface1, dark ? 0.36 : 0.42),
     userBubbleBg: mixColor(colors.accent, colors.surface1, dark ? 0.14 : 0.09),
     userBubbleBorder: mixColor(colors.accent, colors.border, dark ? 0.32 : 0.24),
     thoughtBg: mixColor(colors.foregroundMuted, colors.surface0, dark ? 0.08 : 0.05),

@@ -69,6 +69,7 @@ import {
   pickWebFiles,
   type PickedWebFile,
   pointerCursorStyle,
+  useComposerInputSizing,
 } from "./web";
 
 function normalizeLucideIconName(raw: string | undefined | null, fallback: string): string {
@@ -237,14 +238,31 @@ export function SidechatComposerBar({
     return () => clearTimeout(timer);
   }, [pickerQuery]);
 
-  // Paseo exact toolbar geometry tokens
+  // Paseo exact composer & toolbar geometry tokens (`MOD 3390` + `MOD 4966` + `MOD 4990`)
+  const toolbarControlHeight = isTouch ? 44 : 28;
   const discSize = isTouch ? 36 : 28;
+  const controlGap = isTouch ? 0 : 4;
   const glyphSize = isTouch ? 18 : 15;
   const caretSize = 12;
   const ringSize = isTouch ? 18 : 16;
+  const composerPaddingTop = isTouch ? 12 : 16;
+  const composerPaddingBottom = isTouch ? 4 : 12;
+  const composerPaddingHorizontal = 16;
+  const composerCornerRadius = isTouch ? 26 : 16;
+  const toolbarLeadingOverhang = isTouch ? 9 : 6;
+  const toolbarTrailingOverhang = isTouch ? 8 : 6;
   const labelFontSize = Math.max(12, appearance.uiBaseFontSize);
   const density = resolveToolbarDensity(panelWidth, isTouch);
   const compact = isTouch || panelWidth < 460;
+  const [inputSurfaceWidth, setInputSurfaceWidth] = useState(() =>
+    Math.max(160, Math.min(panelWidth, appearance.contentMaxWidth) - 64),
+  );
+  const composerInputSizing = useComposerInputSizing({
+    value: draft,
+    surfaceWidth: inputSurfaceWidth,
+    contentFontSize: appearance.contentFontSize,
+    lineHeight: appearance.composerLineHeight,
+  });
 
   // Detect repository forge (`github` / `gitlab` / `gitea` / `forgejo` / `codeberg`)
   const forgeInfoQuery = useQuery({
@@ -516,12 +534,11 @@ export function SidechatComposerBar({
   const showThinkingLabel = density === "full";
   const showModeLabel = density !== "iconOnly";
 
-  const hasTrayItems =
-    attachments.length > 0 ||
-    pendingUploadNames.length > 0 ||
-    (hasMainAgent && shouldAttachMainContext) ||
-    Boolean(attachedQuote) ||
-    Boolean(candidateSelection && !attachedQuote);
+  const hasFloatingPillRow =
+    (hasMainAgent && shouldAttachMainContext) || Boolean(candidateSelection && !attachedQuote);
+
+  const hasAttachmentSlotItems =
+    attachments.length > 0 || pendingUploadNames.length > 0 || Boolean(attachedQuote);
 
   const hasSendableInput = draft.trim().length > 0 || attachments.length > 0;
 
@@ -708,226 +725,55 @@ export function SidechatComposerBar({
     ? t("composerInputPlaceholderCompact")
     : t("composerInputPlaceholder");
 
+  const pillClearance = isTouch ? 8 : 10;
+
   return (
     <View
       style={{
         position: "relative",
-        paddingHorizontal: 12,
-        paddingBottom: 12,
-        paddingTop: 4,
+        width: "100%",
+        minHeight: 75,
+        paddingHorizontal: 16,
+        paddingBottom: 16,
+        paddingTop: 0,
         backgroundColor: colors.surface0,
         zIndex: 20,
       }}
     >
-      <ComposerAutocompletePopover
-        visible={showAutocompletePopover}
-        options={autocompleteOptions}
-        selectedIndex={safeSelectedAcIndex}
-        isLoading={
-          activeFileMention ? workspaceFilesQuery.isFetching : slashCommandsQuery.isLoading
-        }
-        loadingLabel={
-          activeFileMention ? t("searchingWorkspaceFiles") : t("loadingSlashCommands")
-        }
-        emptyLabel={t("pickerNoResults")}
-        theme={theme}
-        isTouch={isTouch}
-        uiFontSize={appearance.uiBaseFontSize}
-      />
       <View
         style={{
-          borderRadius: 16,
-          borderWidth: 1,
-          borderColor: inputFocused
-            ? mixColor(colors.accent, colors.border, 0.35)
-            : colors.border,
-          backgroundColor: colors.surface1,
-          paddingHorizontal: 12,
-          paddingTop: 10,
-          paddingBottom: 8,
-          gap: 8,
+          width: "100%",
+          maxWidth: appearance.contentMaxWidth,
+          alignSelf: "center",
         }}
       >
-        {/* Paseo Attachment & Context Pill Tray */}
-        {hasTrayItems ? (
+        {/* Paseo Floating Composer Pill Row (`composerPillStyles` above the card, keeping card height 1:1 with Paseo) */}
+        {hasFloatingPillRow ? (
           <View
             style={{
+              width: "100%",
+              paddingTop: pillClearance,
+              paddingBottom: pillClearance,
               flexDirection: "row",
               alignItems: "center",
               flexWrap: "wrap",
-              gap: 6,
+              gap: 8,
             }}
           >
-            {/* Pending file upload pills */}
-            {pendingUploadNames.map((name, idx) => (
-              <View
-                key={`uploading-${idx}-${name}`}
-                style={{
-                  minHeight: 24,
-                  paddingHorizontal: 8,
-                  borderRadius: 999,
-                  backgroundColor: colors.surface2,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                }}
-              >
-                <Spinner size={11} color={colors.accent} />
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    maxWidth: 180,
-                    fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                    color: colors.foregroundMuted,
-                  }}
-                >
-                  {t("uploadingFile", { name })}
-                </Text>
-              </View>
-            ))}
-
-            {/* Attached Images, Files, Issues/PRs, and Plugin Resources (e.g. Jira tickets) */}
-            {attachments.map((att) => {
-              let pillTitle = "";
-              let pillSubtitle: string | null = null;
-              let pillIconName: string | null = null;
-              let pillIconSvg: string | null = null;
-              let externalUrl: string | null = null;
-
-              if (att.kind === "image") {
-                pillTitle = att.fileName;
-                pillSubtitle = formatFileSizeCompact(att.size);
-                pillIconName = "Image";
-              } else if (att.kind === "file") {
-                pillTitle = att.attachment.fileName;
-                pillSubtitle = formatFileSizeCompact(att.attachment.size);
-                pillIconName = "Paperclip";
-              } else if (att.kind === "forge") {
-                const pres = resolveForgePresentation(att.item.forge);
-                const prefix =
-                  att.item.kind === "change_request" ? pres.numberPrefix : pres.issueNumberPrefix;
-                pillTitle = `${prefix}${att.item.number} ${att.item.title}`;
-                pillIconSvg = pres.iconSvg;
-                pillIconName = pres.fallbackIconName;
-                externalUrl = att.item.url;
-              } else if (att.kind === "plugin_resource") {
-                pillTitle = att.item.title;
-                pillSubtitle = `${att.sourceTitle} ${att.item.identifier}`;
-                pillIconSvg = att.iconSvg ?? null;
-                pillIconName = normalizeLucideIconName(att.iconName, "Ticket");
-                externalUrl = att.item.url;
-              }
-
-              const labelContent = (
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 5,
-                    paddingVertical: 2,
-                    flexShrink: 1,
-                  }}
-                >
-                  {pillIconSvg ? (
-                    <Icon icon={{ svg: pillIconSvg }} size={12} color={colors.foregroundMuted} />
-                  ) : pillIconName ? (
-                    <Icon name={pillIconName} size={12} color={colors.foregroundMuted} />
-                  ) : null}
-                  <Text
-                    numberOfLines={1}
-                    style={{
-                      maxWidth: 165,
-                      fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                      fontWeight: "500",
-                      color: colors.foreground,
-                    }}
-                  >
-                    {pillTitle}
-                  </Text>
-                  {pillSubtitle ? (
-                    <Text
-                      numberOfLines={1}
-                      style={{
-                        maxWidth: 110,
-                        fontSize: Math.max(10, appearance.uiBaseFontSize - 3),
-                        color: colors.foregroundMuted,
-                      }}
-                    >
-                      {pillSubtitle}
-                    </Text>
-                  ) : null}
-                </View>
-              );
-
-              return (
-                <View
-                  key={att.id}
-                  style={{
-                    minHeight: 24,
-                    maxWidth: "100%",
-                    paddingLeft: 8,
-                    paddingRight: 4,
-                    borderRadius: 999,
-                    backgroundColor: colors.surface2,
-                    borderWidth: 1,
-                    borderColor: colors.border,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 4,
-                  }}
-                >
-                  {externalUrl ? (
-                    <Pressable
-                      accessibilityRole="link"
-                      accessibilityLabel={pillTitle}
-                      onPress={() => {
-                        void openExternalUrl(externalUrl!).catch(() => {});
-                      }}
-                      style={[{ flexShrink: 1 }, pointerCursorStyle]}
-                    >
-                      {labelContent}
-                    </Pressable>
-                  ) : (
-                    labelContent
-                  )}
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t("removeAttachment", { name: pillTitle })}
-                    onPress={() => removeAttachmentById(att.id)}
-                    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                      {
-                        width: 18,
-                        height: 18,
-                        borderRadius: 9,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        backgroundColor: pressed || hovered ? colors.surface0 : "transparent",
-                      },
-                      pointerCursorStyle,
-                    ]}
-                  >
-                    <Icon name="X" size={11} color={colors.foregroundMuted} />
-                  </Pressable>
-                </View>
-              );
-            })}
-
-            {/* Main Session Context Pill */}
             {hasMainAgent && shouldAttachMainContext ? (
               <View
                 style={{
-                  minHeight: 24,
-                  paddingLeft: 8,
-                  paddingRight: 4,
-                  borderRadius: 999,
-                  backgroundColor: palette.accentSoftBg,
+                  minHeight: 32,
+                  paddingLeft: 12,
+                  paddingRight: 6,
+                  paddingVertical: 4,
+                  borderRadius: 16,
+                  backgroundColor: colors.surface1,
                   borderWidth: 1,
-                  borderColor: palette.accentSoftBorder,
+                  borderColor: palette.borderAccent,
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 4,
+                  gap: 6,
                 }}
               >
                 <Pressable
@@ -938,19 +784,18 @@ export function SidechatComposerBar({
                     {
                       flexDirection: "row",
                       alignItems: "center",
-                      gap: 4,
+                      gap: 6,
                       paddingVertical: 2,
                     },
                     pointerCursorStyle,
                   ]}
                 >
-                  <Icon name="Link2" size={11} color={colors.accent} />
+                  <Icon name="Link2" size={12} color={colors.accent} />
                   <Text
                     numberOfLines={1}
                     style={{
-                      fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                      fontWeight: "500",
-                      color: colors.foreground,
+                      fontSize: Math.max(11, appearance.uiBaseFontSize - 1),
+                      color: colors.foregroundMuted,
                     }}
                   >
                     {isAutoFirstTurnContext ? t("mainContextAuto") : t("mainContextAttached")}
@@ -962,63 +807,12 @@ export function SidechatComposerBar({
                   onPress={onToggleMainContext}
                   style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
                     {
-                      width: 18,
-                      height: 18,
-                      borderRadius: 9,
+                      width: 20,
+                      height: 20,
+                      borderRadius: 10,
                       alignItems: "center",
                       justifyContent: "center",
                       backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                    },
-                    pointerCursorStyle,
-                  ]}
-                >
-                  <Icon name="X" size={11} color={colors.foregroundMuted} />
-                </Pressable>
-              </View>
-            ) : null}
-
-            {/* Quoted Selection Pill */}
-            {attachedQuote ? (
-              <View
-                {...codeScopeProps}
-                style={{
-                  minHeight: 24,
-                  maxWidth: "100%",
-                  paddingLeft: 8,
-                  paddingRight: 4,
-                  borderRadius: 999,
-                  backgroundColor: colors.surface2,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                }}
-              >
-                <Icon name="Quote" size={11} color={colors.accent} />
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    flexShrink: 1,
-                    maxWidth: 200,
-                    fontFamily: appearance.monoFontFamily,
-                    fontSize: Math.max(11, appearance.codeFontSize - 1),
-                    color: colors.foreground,
-                  }}
-                >
-                  {attachedQuote.replace(/\s+/g, " ")}
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("clearQuote")}
-                  onPress={onClearQuote}
-                  style={[
-                    {
-                      width: 18,
-                      height: 18,
-                      borderRadius: 9,
-                      alignItems: "center",
-                      justifyContent: "center",
                     },
                     pointerCursorStyle,
                   ]}
@@ -1035,24 +829,25 @@ export function SidechatComposerBar({
                 onPress={onAttachCandidateSelection}
                 style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
                   {
-                    minHeight: 24,
-                    paddingHorizontal: 8,
-                    borderRadius: 999,
-                    backgroundColor: pressed || hovered ? colors.surface2 : colors.surface0,
+                    minHeight: 32,
+                    paddingHorizontal: 12,
+                    paddingVertical: 4,
+                    borderRadius: 16,
+                    backgroundColor: pressed || hovered ? colors.surface2 : colors.surface1,
                     borderWidth: 1,
-                    borderColor: colors.border,
+                    borderColor: palette.borderAccent,
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 4,
+                    gap: 6,
                   },
                   pointerCursorStyle,
                 ]}
               >
-                <Icon name="Plus" size={11} color={colors.accent} />
+                <Icon name="Plus" size={12} color={colors.accent} />
                 <Text
                   numberOfLines={1}
                   style={{
-                    fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
+                    fontSize: Math.max(11, appearance.uiBaseFontSize - 1),
                     color: colors.foregroundMuted,
                   }}
                 >
@@ -1063,87 +858,355 @@ export function SidechatComposerBar({
           </View>
         ) : null}
 
-        {/* Prompt Input */}
-        <TextInput
-          multiline
-          value={draft}
-          onChangeText={(nextText) => {
-            setDismissedTriggerKey(null);
-            setCursorIndex((prev) => {
-              const delta = nextText.length - draft.length;
-              if (delta > 0 && prev === draft.length) return nextText.length;
-              return Math.max(0, Math.min(nextText.length, prev + delta));
-            });
-            onChangeDraft(nextText);
-          }}
-          onSelectionChange={(e) => {
-            const start = e.nativeEvent?.selection?.start;
-            if (typeof start === "number") {
-              setCursorIndex(start);
+        <View style={{ position: "relative", width: "100%" }}>
+          <ComposerAutocompletePopover
+            visible={showAutocompletePopover}
+            options={autocompleteOptions}
+            selectedIndex={safeSelectedAcIndex}
+            isLoading={
+              activeFileMention ? workspaceFilesQuery.isFetching : slashCommandsQuery.isLoading
             }
-          }}
-          onFocus={() => setInputFocused(true)}
-          onBlur={() => setInputFocused(false)}
-          placeholder={placeholderText}
-          placeholderTextColor={colors.foregroundMuted}
-          accessibilityLabel={placeholderText}
-          {...composerWebKeyProps(
-            appearance.sendShortcut,
-            () => {
-              if (canSubmit) onSubmit();
-            },
-            {
-              isOpen: showAutocompletePopover,
-              hasOptions: autocompleteOptions.length > 0,
-              onMove: (delta) => {
-                setSelectedAcIndex((prev) => {
-                  const len = autocompleteOptions.length;
-                  if (len === 0) return 0;
-                  return (((prev + delta) % len) + len) % len;
-                });
-              },
-              onConfirm: () => {
-                autocompleteOptions[safeSelectedAcIndex]?.onSelect();
-              },
-              onDismiss: () => {
-                if (rawTriggerKey) setDismissedTriggerKey(rawTriggerKey);
-              },
-            },
-          )}
-          {...composerPasteImageProps(handleAddPickedImages)}
-          style={[
-            {
-              minHeight: isTouch ? 42 : 34,
-              maxHeight: 150,
-              padding: 0,
-              fontSize: appearance.contentFontSize,
-              lineHeight: appearance.contentLineHeight,
-              color: colors.foreground,
-            },
-            noOutlineInputStyle,
-          ]}
-        />
-
-        {/* Paseo Bottom Toolbar Row */}
-        <View
-          style={{
-            minHeight: discSize,
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 4,
-          }}
-        >
-          {/* Left Controls */}
+            loadingLabel={
+              activeFileMention ? t("searchingWorkspaceFiles") : t("loadingSlashCommands")
+            }
+            emptyLabel={t("pickerNoResults")}
+            theme={theme}
+            isTouch={isTouch}
+            uiFontSize={appearance.uiBaseFontSize}
+          />
           <View
             style={{
-              flex: 1,
-              minWidth: 0,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: isTouch ? 2 : 4,
+              borderRadius: composerCornerRadius,
+              borderWidth: 1,
+              borderColor: inputFocused
+                ? mixColor(colors.foreground, palette.borderAccent, 0.14)
+                : palette.borderAccent,
+              backgroundColor: colors.surface1,
+              paddingHorizontal: composerPaddingHorizontal,
+              paddingTop: composerPaddingTop,
+              paddingBottom: composerPaddingBottom,
+              gap: 12,
             }}
           >
+            {/* Paseo Inline Attachment Slot (`attachmentTray`: images, files, issues/PRs, Jira tickets, attached quote) */}
+            {hasAttachmentSlotItems ? (
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 8,
+                }}
+              >
+                {/* Pending file upload pills */}
+                {pendingUploadNames.map((name, idx) => (
+                  <View
+                    key={`uploading-${idx}-${name}`}
+                    style={{
+                      minHeight: 24,
+                      paddingHorizontal: 8,
+                      borderRadius: 999,
+                      backgroundColor: colors.surface2,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 5,
+                    }}
+                  >
+                    <Spinner size={11} color={colors.accent} />
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        maxWidth: 180,
+                        fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
+                        color: colors.foregroundMuted,
+                      }}
+                    >
+                      {t("uploadingFile", { name })}
+                    </Text>
+                  </View>
+                ))}
+
+                {/* Attached Images, Files, Issues/PRs, and Plugin Resources (e.g. Jira tickets) */}
+                {attachments.map((att) => {
+                  let pillTitle = "";
+                  let pillSubtitle: string | null = null;
+                  let pillIconName: string | null = null;
+                  let pillIconSvg: string | null = null;
+                  let externalUrl: string | null = null;
+
+                  if (att.kind === "image") {
+                    pillTitle = att.fileName;
+                    pillSubtitle = formatFileSizeCompact(att.size);
+                    pillIconName = "Image";
+                  } else if (att.kind === "file") {
+                    pillTitle = att.attachment.fileName;
+                    pillSubtitle = formatFileSizeCompact(att.attachment.size);
+                    pillIconName = "Paperclip";
+                  } else if (att.kind === "forge") {
+                    const pres = resolveForgePresentation(att.item.forge);
+                    const prefix =
+                      att.item.kind === "change_request"
+                        ? pres.numberPrefix
+                        : pres.issueNumberPrefix;
+                    pillTitle = `${prefix}${att.item.number} ${att.item.title}`;
+                    pillIconSvg = pres.iconSvg;
+                    pillIconName = pres.fallbackIconName;
+                    externalUrl = att.item.url;
+                  } else if (att.kind === "plugin_resource") {
+                    pillTitle = att.item.title;
+                    pillSubtitle = `${att.sourceTitle} ${att.item.identifier}`;
+                    pillIconSvg = att.iconSvg ?? null;
+                    pillIconName = normalizeLucideIconName(att.iconName, "Ticket");
+                    externalUrl = att.item.url;
+                  }
+
+                  const labelContent = (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 5,
+                        paddingVertical: 2,
+                        flexShrink: 1,
+                      }}
+                    >
+                      {pillIconSvg ? (
+                        <Icon
+                          icon={{ svg: pillIconSvg }}
+                          size={12}
+                          color={colors.foregroundMuted}
+                        />
+                      ) : pillIconName ? (
+                        <Icon name={pillIconName} size={12} color={colors.foregroundMuted} />
+                      ) : null}
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          maxWidth: 165,
+                          fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
+                          fontWeight: "500",
+                          color: colors.foreground,
+                        }}
+                      >
+                        {pillTitle}
+                      </Text>
+                      {pillSubtitle ? (
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            maxWidth: 110,
+                            fontSize: Math.max(10, appearance.uiBaseFontSize - 3),
+                            color: colors.foregroundMuted,
+                          }}
+                        >
+                          {pillSubtitle}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+
+                  return (
+                    <View
+                      key={att.id}
+                      style={{
+                        minHeight: 24,
+                        maxWidth: "100%",
+                        paddingLeft: 8,
+                        paddingRight: 4,
+                        borderRadius: 999,
+                        backgroundColor: colors.surface2,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 4,
+                      }}
+                    >
+                      {externalUrl ? (
+                        <Pressable
+                          accessibilityRole="link"
+                          accessibilityLabel={pillTitle}
+                          onPress={() => {
+                            void openExternalUrl(externalUrl!).catch(() => {});
+                          }}
+                          style={[{ flexShrink: 1 }, pointerCursorStyle]}
+                        >
+                          {labelContent}
+                        </Pressable>
+                      ) : (
+                        labelContent
+                      )}
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t("removeAttachment", { name: pillTitle })}
+                        onPress={() => removeAttachmentById(att.id)}
+                        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                          {
+                            width: 18,
+                            height: 18,
+                            borderRadius: 9,
+                            alignItems: "center",
+                            justifyContent: "center",
+                            backgroundColor: pressed || hovered ? colors.surface0 : "transparent",
+                          },
+                          pointerCursorStyle,
+                        ]}
+                      >
+                        <Icon name="X" size={11} color={colors.foregroundMuted} />
+                      </Pressable>
+                    </View>
+                  );
+                })}
+
+                {/* Quoted Selection Pill */}
+                {attachedQuote ? (
+                  <View
+                    {...codeScopeProps}
+                    style={{
+                      minHeight: 24,
+                      maxWidth: "100%",
+                      paddingLeft: 8,
+                      paddingRight: 4,
+                      borderRadius: 999,
+                      backgroundColor: colors.surface2,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 5,
+                    }}
+                  >
+                    <Icon name="Quote" size={11} color={colors.accent} />
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        flexShrink: 1,
+                        maxWidth: 200,
+                        fontFamily: appearance.monoFontFamily,
+                        fontSize: Math.max(11, appearance.codeFontSize - 1),
+                        color: colors.foreground,
+                      }}
+                    >
+                      {attachedQuote.replace(/\s+/g, " ")}
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("clearQuote")}
+                      onPress={onClearQuote}
+                      style={[
+                        {
+                          width: 18,
+                          height: 18,
+                          borderRadius: 9,
+                          alignItems: "center",
+                          justifyContent: "center",
+                        },
+                        pointerCursorStyle,
+                      ]}
+                    >
+                      <Icon name="X" size={11} color={colors.foregroundMuted} />
+                    </Pressable>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* Prompt Input (`MessageInput` exact 46px web resting height + dynamic auto-grow) */}
+            <View
+              onLayout={(e) => {
+                const w = e.nativeEvent.layout.width;
+                if (w > 0 && Math.abs(w - inputSurfaceWidth) >= 2) {
+                  setInputSurfaceWidth(w);
+                }
+              }}
+              style={{ width: "100%", flexShrink: 1 }}
+            >
+              <TextInput
+                multiline
+                scrollEnabled={composerInputSizing.scrollEnabled}
+                value={draft}
+                onChangeText={(nextText) => {
+                  setDismissedTriggerKey(null);
+                  setCursorIndex((prev) => {
+                    const delta = nextText.length - draft.length;
+                    if (delta > 0 && prev === draft.length) return nextText.length;
+                    return Math.max(0, Math.min(nextText.length, prev + delta));
+                  });
+                  onChangeDraft(nextText);
+                }}
+                onSelectionChange={(e) => {
+                  const start = e.nativeEvent?.selection?.start;
+                  if (typeof start === "number") {
+                    setCursorIndex(start);
+                  }
+                }}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
+                placeholder={placeholderText}
+                placeholderTextColor={palette.foregroundExtraMuted}
+                accessibilityLabel={placeholderText}
+                {...composerWebKeyProps(
+                  appearance.sendShortcut,
+                  () => {
+                    if (canSubmit) onSubmit();
+                  },
+                  {
+                    isOpen: showAutocompletePopover,
+                    hasOptions: autocompleteOptions.length > 0,
+                    onMove: (delta) => {
+                      setSelectedAcIndex((prev) => {
+                        const len = autocompleteOptions.length;
+                        if (len === 0) return 0;
+                        return (((prev + delta) % len) + len) % len;
+                      });
+                    },
+                    onConfirm: () => {
+                      autocompleteOptions[safeSelectedAcIndex]?.onSelect();
+                    },
+                    onDismiss: () => {
+                      if (rawTriggerKey) setDismissedTriggerKey(rawTriggerKey);
+                    },
+                  },
+                )}
+                {...composerPasteImageProps(handleAddPickedImages)}
+                style={[
+                  {
+                    width: "100%",
+                    padding: 0,
+                    fontSize: appearance.contentFontSize,
+                    lineHeight: appearance.composerLineHeight,
+                    color: colors.foreground,
+                  },
+                  composerInputSizing.style,
+                  noOutlineInputStyle,
+                ]}
+              />
+            </View>
+
+            {/* Paseo Bottom Toolbar Row (`TOOLBAR_CONTROL_HEIGHT` + `composerToolbarOverhang`) */}
+            <View
+              style={{
+                minHeight: toolbarControlHeight,
+                marginLeft: -toolbarLeadingOverhang,
+                marginRight: -toolbarTrailingOverhang,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 4,
+              }}
+            >
+              {/* Left Controls */}
+              <View
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: controlGap,
+                }}
+              >
             {/* 1. Paseo `+` Attachment Menu + Searchable Issue/PR & Plugin Resource Picker */}
             <View style={{ position: "relative", zIndex: plusMenuOpen || activePicker ? 55 : 1 }}>
               <PopoverMenu
@@ -1262,15 +1325,13 @@ export function SidechatComposerBar({
                       {
                         height: discSize,
                         maxWidth: density === "iconOnly" ? 115 : 152,
-                        paddingHorizontal: 9,
+                        paddingHorizontal: 8,
                         borderRadius: 999,
                         flexDirection: "row",
                         alignItems: "center",
                         gap: 5,
                         backgroundColor:
-                          modelMenuOpen || pressed || hovered
-                            ? mixColor(colors.foreground, colors.surface2, 0.08)
-                            : colors.surface2,
+                          modelMenuOpen || pressed || hovered ? colors.surface2 : "transparent",
                       },
                       pointerCursorStyle,
                     ]}
@@ -1559,7 +1620,7 @@ export function SidechatComposerBar({
             style={{
               flexDirection: "row",
               alignItems: "center",
-              gap: 4,
+              gap: controlGap,
               flexShrink: 0,
             }}
           >
@@ -1580,54 +1641,58 @@ export function SidechatComposerBar({
               t={t}
             />
 
-            {/* 7. Circular Stop / Always-Visible Send Disc */}
-            {isBusy && !hasSendableInput ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("stopButton")}
-                onPress={onStop}
-                style={({ pressed }) => [
-                  {
-                    width: discSize,
-                    height: discSize,
-                    borderRadius: 999,
-                    backgroundColor: "#dc2626",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: pressed ? 0.72 : 1,
-                  },
-                  pointerCursorStyle,
-                ]}
-              >
-                <Icon name="Square" size={isTouch ? 13 : 11} color="#ffffff" />
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("sendButton")}
-                accessibilityState={{ disabled: !canSubmit }}
-                disabled={!canSubmit}
-                onPress={onSubmit}
-                style={({ pressed }) => [
-                  {
-                    width: discSize,
-                    height: discSize,
-                    borderRadius: 999,
-                    backgroundColor: canSubmit ? colors.accent : colors.surface2,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: !canSubmit ? 0.45 : pressed ? 0.72 : 1,
-                  },
-                  canSubmit ? pointerCursorStyle : undefined,
-                ]}
-              >
-                <Icon
-                  name="ArrowUp"
-                  size={isTouch ? 18 : 15}
-                  color={canSubmit ? colors.accentForeground : colors.foregroundMuted}
-                />
-              </Pressable>
-            )}
+            {/* 7. Circular Stop / Always-Visible Send Disc (`Qe.sendButtonDisc` + `Qe.buttonDisabled`) */}
+            <View style={{ marginLeft: isTouch ? 6 : 0 }}>
+              {isBusy && !hasSendableInput ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("stopButton")}
+                  onPress={onStop}
+                  style={({ pressed }) => [
+                    {
+                      width: discSize,
+                      height: discSize,
+                      borderRadius: 999,
+                      backgroundColor: "#dc2626",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: pressed ? 0.7 : 1,
+                    },
+                    pointerCursorStyle,
+                  ]}
+                >
+                  <Icon name="Square" size={isTouch ? 13 : 11} color="#ffffff" />
+                </Pressable>
+              ) : (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("sendButton")}
+                  accessibilityState={{ disabled: !canSubmit }}
+                  disabled={!canSubmit}
+                  onPress={onSubmit}
+                  style={({ pressed }) => [
+                    {
+                      width: discSize,
+                      height: discSize,
+                      borderRadius: 999,
+                      backgroundColor: colors.accent,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: !canSubmit ? 0.5 : pressed ? 0.7 : 1,
+                    },
+                    canSubmit ? pointerCursorStyle : undefined,
+                  ]}
+                >
+                  <Icon
+                    name="ArrowUp"
+                    size={isTouch ? 18 : 15}
+                    color={colors.accentForeground}
+                  />
+                </Pressable>
+              )}
+            </View>
+          </View>
+        </View>
           </View>
         </View>
       </View>
