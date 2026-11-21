@@ -1377,48 +1377,30 @@ function SidechatSurface({
     ? settledUpdatedAtByAgentRef.current.get(mainAgentId) ?? ""
     : "";
   const settledMainStamp = `${mainTurnSettleEpoch}:${settledMainUpdatedAt}:${prefs.starterModelMode}`;
+  const requestedStarterMode = prefs.starterModelMode === "off" ? "instant" : "ai";
 
-  const instantStartersQuery = useQuery({
+  const startersQuery = useQuery({
     queryKey: [
-      "sidechat-starters-instant",
+      "sidechat-starters",
       host.id,
       mainAgentId,
       settledMainStamp,
       locale,
+      requestedStarterMode,
     ] as const,
-    enabled: Boolean(mainAgentId && isEmptyStarterView),
-    staleTime: 2_000,
-    queryFn: () =>
-      callStarterSuggestions({
-        agentId: mainAgentId!,
-        workspaceId,
-        locale,
-        mode: "instant",
-        forceRefresh: false,
-      }),
-  });
-
-  const starterCacheKey = instantStartersQuery.data?.cacheKey ?? null;
-
-  const aiStartersQuery = useQuery({
-    queryKey: ["sidechat-starters-ai", host.id, mainAgentId, starterCacheKey, locale] as const,
-    enabled: Boolean(
-      mainAgentId &&
-        isEmptyStarterView &&
-        starterCacheKey &&
-        instantStartersQuery.data?.canRefineWithAi &&
-        prefs.starterModelMode !== "off",
-    ),
+    enabled: Boolean(mainAgentId && mainAgent && isEmptyStarterView),
     staleTime: 5 * 60_000,
     queryFn: () =>
       callStarterSuggestions({
         agentId: mainAgentId!,
         workspaceId,
         locale,
-        mode: "ai",
+        mode: requestedStarterMode,
         forceRefresh: false,
       }),
   });
+
+  const starterCacheKey = startersQuery.data?.cacheKey ?? null;
 
   const [manualStarterOverride, setManualStarterOverride] = useState<{
     agentId: string;
@@ -1459,7 +1441,19 @@ function SidechatSurface({
 
   const defaultStarterItems = useMemo(() => buildDefaultStarterPrompts(locale), [locale]);
 
+  const isLoadingStarters = Boolean(
+    mainAgentId &&
+      isEmptyStarterView &&
+      (refreshingStarters ||
+        (prefs.starterModelMode !== "off" && !mainAgent) ||
+        startersQuery.isLoading ||
+        startersQuery.isFetching),
+  );
+
   const starterItems = useMemo<StarterPromptItem[]>(() => {
+    if (!mainAgentId) {
+      return defaultStarterItems;
+    }
     if (
       manualStarterOverride &&
       manualStarterOverride.agentId === mainAgentId &&
@@ -1468,29 +1462,28 @@ function SidechatSurface({
     ) {
       return manualStarterOverride.starters;
     }
-    if (aiStartersQuery.data?.starters && aiStartersQuery.data.starters.length > 0) {
-      return aiStartersQuery.data.starters;
+    if (startersQuery.data?.starters && startersQuery.data.starters.length > 0) {
+      return startersQuery.data.starters;
     }
-    if (instantStartersQuery.data?.starters && instantStartersQuery.data.starters.length > 0) {
-      return instantStartersQuery.data.starters;
+    // Only fall back to static defaults when there is no active main chat / query errored.
+    if (startersQuery.isError) {
+      return defaultStarterItems;
     }
-    return defaultStarterItems;
+    return [];
   }, [
-    manualStarterOverride,
     mainAgentId,
+    manualStarterOverride,
     starterCacheKey,
-    aiStartersQuery.data?.starters,
-    instantStartersQuery.data?.starters,
+    startersQuery.data?.starters,
+    startersQuery.isError,
     defaultStarterItems,
   ]);
 
   const hasContextualMainStarters = Boolean(
-    mainAgentId &&
-      ((instantStartersQuery.data && instantStartersQuery.data.source !== "default") ||
-        aiStartersQuery.data),
+    mainAgentId && startersQuery.data && startersQuery.data.source !== "default",
   );
-  const isTailoringStarters = Boolean(
-    mainAgentId && (aiStartersQuery.isFetching || refreshingStarters),
+  const showStarterHeader = Boolean(
+    mainAgentId && (isLoadingStarters || hasContextualMainStarters || Boolean(manualStarterOverride)),
   );
 
   const selectedModelLabel = currentModelDef?.label || effectiveModelId || null;
@@ -1735,7 +1728,7 @@ function SidechatSurface({
             </View>
 
             <View style={{ gap: 6 }}>
-              {(hasContextualMainStarters || isTailoringStarters) ? (
+              {showStarterHeader ? (
                 <View
                   style={{
                     flexDirection: "row",
@@ -1747,7 +1740,7 @@ function SidechatSurface({
                   }}
                 >
                   <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    {isTailoringStarters ? (
+                    {isLoadingStarters ? (
                       <Spinner size={11} color={colors.accent} label={t("generatingStarters")} />
                     ) : (
                       <Icon name="Sparkles" size={11} color={colors.accent} />
@@ -1760,7 +1753,7 @@ function SidechatSurface({
                         color: colors.foregroundMuted,
                       }}
                     >
-                      {isTailoringStarters
+                      {isLoadingStarters
                         ? t("generatingStarters")
                         : t("suggestedFollowUpsTitle")}
                     </Text>
@@ -1769,7 +1762,7 @@ function SidechatSurface({
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={t("refreshStarters")}
-                    disabled={isTailoringStarters}
+                    disabled={isLoadingStarters}
                     onPress={() => {
                       void handleRefreshStarters();
                     }}
@@ -1780,7 +1773,7 @@ function SidechatSurface({
                         borderRadius: 6,
                         alignItems: "center",
                         justifyContent: "center",
-                        opacity: isTailoringStarters ? 0.45 : 1,
+                        opacity: isLoadingStarters ? 0.45 : 1,
                         backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
                       },
                       pointerCursorStyle,
@@ -1791,45 +1784,81 @@ function SidechatSurface({
                 </View>
               ) : null}
 
-              {starterItems.map((starter) => (
-                <Pressable
-                  key={starter.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={starter.title}
-                  onPress={() => {
-                    void sendPromptText(starter.prompt);
-                  }}
-                  style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                    {
-                      minHeight: compact ? 42 : 36,
-                      paddingHorizontal: 11,
-                      paddingVertical: 8,
-                      borderRadius: 8,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      backgroundColor: pressed || hovered ? colors.surface2 : colors.surface1,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 8,
-                    },
-                    pointerCursorStyle,
-                  ]}
-                >
-                  <Icon name={starter.icon} size={14} color={colors.accent} />
-                  <Text
-                    numberOfLines={2}
-                    style={{
-                      flex: 1,
-                      fontSize: appearance.uiBaseFontSize,
-                      lineHeight: Math.round(appearance.uiBaseFontSize * 1.38),
-                      color: colors.foreground,
-                    }}
-                  >
-                    {starter.title}
-                  </Text>
-                  <Icon name="ArrowUpRight" size={13} color={colors.foregroundMuted} />
-                </Pressable>
-              ))}
+              {isLoadingStarters
+                ? [0, 1, 2, 3].map((idx) => (
+                    <View
+                      key={`starter-skeleton-${idx}`}
+                      style={{
+                        minHeight: compact ? 42 : 36,
+                        paddingHorizontal: 11,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        backgroundColor: colors.surface1,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        opacity: 0.72,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 14,
+                          height: 14,
+                          borderRadius: 4,
+                          backgroundColor: colors.surface2,
+                        }}
+                      />
+                      <View
+                        style={{
+                          height: 10,
+                          width: `${76 - idx * 8}%`,
+                          borderRadius: 5,
+                          backgroundColor: colors.surface2,
+                        }}
+                      />
+                    </View>
+                  ))
+                : starterItems.map((starter) => (
+                    <Pressable
+                      key={starter.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={starter.title}
+                      onPress={() => {
+                        void sendPromptText(starter.prompt);
+                      }}
+                      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                        {
+                          minHeight: compact ? 42 : 36,
+                          paddingHorizontal: 11,
+                          paddingVertical: 8,
+                          borderRadius: 8,
+                          borderWidth: 1,
+                          borderColor: colors.border,
+                          backgroundColor: pressed || hovered ? colors.surface2 : colors.surface1,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                        },
+                        pointerCursorStyle,
+                      ]}
+                    >
+                      <Icon name={starter.icon} size={14} color={colors.accent} />
+                      <Text
+                        numberOfLines={2}
+                        style={{
+                          flex: 1,
+                          fontSize: appearance.uiBaseFontSize,
+                          lineHeight: Math.round(appearance.uiBaseFontSize * 1.38),
+                          color: colors.foreground,
+                        }}
+                      >
+                        {starter.title}
+                      </Text>
+                      <Icon name="ArrowUpRight" size={13} color={colors.foregroundMuted} />
+                    </Pressable>
+                  ))}
             </View>
           </ScrollView>
         ) : (
