@@ -1,12 +1,36 @@
-import type { PaseoAgentTimelineEvent } from "@getpaseo/client";
 import type {
   AgentTaskItem,
   AgentTimelineItem,
   ToolCallDetail,
   ToolCallTimelineItem,
 } from "@getpaseo/protocol/agent-types";
+import type { SessionOutboundMessage } from "@getpaseo/protocol/messages";
 import type { ChatDisplayMode } from "./appearance";
 import { parseSidechatUserMessage } from "./context";
+
+export type PaseoAgentTimelineEvent =
+  | Extract<SessionOutboundMessage, { type: "agent_stream" }>["payload"]
+  | {
+      agentId: string;
+      event: {
+        type: "replacement";
+        epoch: string;
+      };
+    }
+  | {
+      agentId: string;
+      subscriptionId: string;
+      event: {
+        type: "subscription_restored";
+      };
+    }
+  | {
+      agentId: string;
+      event: {
+        type: "error";
+        error: string;
+      };
+    };
 
 export type SidechatUserItem = {
   kind: "user_message";

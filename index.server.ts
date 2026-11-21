@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { PaseoApi } from "@getpaseo/client";
 import { execCommand, type PluginServerContext } from "@getpaseo/plugin/server";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
+
+type ServerPaseoApi = Parameters<Parameters<PluginServerContext["addHook"]>[1]>[1]["paseo"];
 import { resolveEffectiveProviderMode, resolveProviderIconSvg } from "./shared/composer-controls";
 import {
   createThreadRpc,
@@ -38,7 +39,7 @@ import { SidechatAttachmentService } from "./server/attachments";
 import { SidechatThreadStore } from "./server/thread-store";
 
 async function loadProviderEntries(
-  paseo: PaseoApi,
+  paseo: ServerPaseoApi,
   cwd: string,
 ): Promise<ProviderSnapshotEntry[]> {
   try {
@@ -55,7 +56,7 @@ async function loadProviderEntries(
 }
 
 async function resolveProviderAndModel(input: {
-  paseo: PaseoApi;
+  paseo: ServerPaseoApi;
   cwd: string;
   entries: ProviderSnapshotEntry[];
   requestedProviderModel?: string;
@@ -403,7 +404,7 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(createThreadRpc, async (input, { paseo }) => {
     const prefs = await readSettings();
-    let parentSnapshot: Awaited<ReturnType<ReturnType<PaseoApi["agents"]["ref"]>["refresh"]>> = null;
+    let parentSnapshot: Awaited<ReturnType<ReturnType<ServerPaseoApi["agents"]["ref"]>["refresh"]>> = null;
     if (input.parentAgentId) {
       try {
         parentSnapshot = await paseo.agents.ref(input.parentAgentId).refresh();

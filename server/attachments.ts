@@ -4,15 +4,13 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import vm from "node:vm";
-import type { PaseoApi } from "@getpaseo/client";
-import { createHostClient } from "@getpaseo/client/node";
 import {
   findSvgIconProblem,
   PluginAttachmentItemSchema,
   PluginAttachmentSearchPayloadSchema,
   type PluginAttachmentItem,
 } from "@getpaseo/plugin";
-import { execCommand } from "@getpaseo/plugin/server";
+import { execCommand, type PluginServerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
 import {
   detectForgeFromRemoteUrl,
@@ -22,8 +20,10 @@ import {
   type UploadedFileAttachmentData,
 } from "../shared/attachments";
 import type { SlashCommandItem, WorkspaceFileEntry } from "../shared/autocomplete";
+import { PaseoDaemonRpcLite } from "./daemon-rpc-lite";
 
-type HostClientInstance = ReturnType<typeof createHostClient>;
+type ServerPaseoApi = Parameters<Parameters<PluginServerContext["addHook"]>[1]>[1]["paseo"];
+type HostClientInstance = PaseoDaemonRpcLite;
 
 interface RawExtractedSource {
   id: string;
@@ -347,16 +347,13 @@ export class SidechatAttachmentService {
         if (!listen) return null;
 
         if (this.hostClient) {
-          await this.hostClient.close().catch(() => {});
+          this.hostClient.close();
           this.hostClient = null;
         }
 
-        const client = createHostClient(listen, {
-          clientId: `paseo-better-sidechat-${randomUUID().slice(0, 8)}`,
-          clientType: "cli",
+        const client = new PaseoDaemonRpcLite(listen, {
           password: process.env.PASEO_PASSWORD,
           connectTimeoutMs: 6_000,
-          reconnect: { enabled: true },
         });
         await client.connect();
         this.hostClient = client;
@@ -724,31 +721,12 @@ export class SidechatAttachmentService {
     const safeName = sanitizeUploadFileName(input.fileName);
     const mimeType = input.mimeType.trim() || "application/octet-stream";
 
-    const client = await this.getConnectedHostClient();
-    if (client) {
-      try {
-        const uploaded = await client.uploadFile({
-          fileName: safeName,
-          mimeType,
-          bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-        });
-        if (uploaded.file && !uploaded.error) {
-          return {
-            type: "uploaded_file",
-            id: uploaded.file.id,
-            fileName: uploaded.file.fileName,
-            mimeType: uploaded.file.mimeType,
-            size: uploaded.file.size,
-            path: uploaded.file.path,
-          };
-        }
-      } catch {
-        // Fall back to direct Paseo uploads directory staging
-      }
-    }
+    // Ensure `this.paseoHomeDir` is resolved from the active daemon instance when reachable
+    await this.getConnectedHostClient().catch(() => null);
+    const homeBase = process.env.PASEO_HOME?.trim() || this.paseoHomeDir;
 
     const id = `upload_${randomUUID()}`;
-    const targetDir = join(this.paseoHomeDir, "uploads", id);
+    const targetDir = join(homeBase, "uploads", id);
     await mkdir(targetDir, { recursive: true });
     const targetPath = join(targetDir, safeName);
     await writeFile(targetPath, bytes);
@@ -824,7 +802,7 @@ export class SidechatAttachmentService {
   }
 
   async listCommandsAndSkills(input: {
-    paseo: PaseoApi;
+    paseo: ServerPaseoApi;
     cwd: string;
     provider: string;
     model?: string | null;
@@ -952,7 +930,7 @@ export class SidechatAttachmentService {
     const current = this.hostClient;
     this.hostClient = null;
     if (current) {
-      await current.close().catch(() => {});
+      current.close();
     }
   }
 }
