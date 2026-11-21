@@ -1,0 +1,199 @@
+import type { PluginTheme } from "@getpaseo/plugin";
+import { Icon, Modal, ScrollView } from "@getpaseo/plugin/client/ui";
+import { useEffect, useId, type ReactNode } from "react";
+import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { pointerCursorStyle, popoverScopeProps, watchPopoverDismiss } from "./web";
+
+export interface MenuOption {
+  id: string;
+  label: string;
+  subtitle?: string | null;
+  icon?: string;
+  selected?: boolean;
+  danger?: boolean;
+  onSelect(): void;
+}
+
+export function PopoverMenu({
+  title,
+  open,
+  onOpenChange,
+  anchor = "left",
+  placement = "bottom",
+  theme,
+  compact,
+  uiFontSize,
+  trigger,
+  headerAction,
+  options,
+  emptyLabel,
+}: {
+  title: string;
+  open: boolean;
+  onOpenChange(open: boolean): void;
+  anchor?: "left" | "right";
+  placement?: "top" | "bottom";
+  theme: PluginTheme;
+  compact: boolean;
+  uiFontSize: number;
+  trigger: ReactNode;
+  headerAction?: ReactNode;
+  options: readonly MenuOption[];
+  emptyLabel?: string;
+}) {
+  const scopeId = useId();
+  const { width: windowWidth } = useWindowDimensions();
+  const useSheet = Platform.OS !== "web" || compact || windowWidth < 520;
+  const { colors } = theme;
+  const rowHeight = useSheet ? 44 : 32;
+
+  useEffect(() => {
+    if (!open || useSheet) return;
+    return watchPopoverDismiss(scopeId, () => onOpenChange(false));
+  }, [open, useSheet, scopeId, onOpenChange]);
+
+  const renderRows = () => (
+    <View style={{ paddingVertical: 4 }}>
+      {options.length === 0 && emptyLabel ? (
+        <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>
+          <Text style={{ fontSize: uiFontSize - 1, color: colors.foregroundMuted }}>
+            {emptyLabel}
+          </Text>
+        </View>
+      ) : (
+        options.map((opt) => (
+          <Pressable
+            key={opt.id}
+            accessibilityRole="menuitem"
+            accessibilityLabel={opt.label}
+            accessibilityState={{ selected: Boolean(opt.selected) }}
+            onPress={() => {
+              onOpenChange(false);
+              opt.onSelect();
+            }}
+            style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+              {
+                minHeight: rowHeight,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                marginHorizontal: 4,
+                borderRadius: 6,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                backgroundColor:
+                  pressed || hovered
+                    ? colors.surface2
+                    : opt.selected
+                      ? colors.surface1
+                      : "transparent",
+              },
+              pointerCursorStyle,
+            ]}
+          >
+            {opt.icon ? (
+              <Icon
+                name={opt.icon}
+                size={14}
+                color={
+                  opt.danger
+                    ? colors.statusDanger
+                    : opt.selected
+                      ? colors.accent
+                      : colors.foregroundMuted
+                }
+              />
+            ) : null}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text
+                numberOfLines={1}
+                style={{
+                  fontSize: uiFontSize,
+                  fontWeight: opt.selected ? "600" : "400",
+                  color: opt.danger ? colors.statusDanger : colors.foreground,
+                }}
+              >
+                {opt.label}
+              </Text>
+              {opt.subtitle ? (
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    fontSize: Math.max(10, uiFontSize - 2),
+                    color: colors.foregroundMuted,
+                    marginTop: 1,
+                  }}
+                >
+                  {opt.subtitle}
+                </Text>
+              ) : null}
+            </View>
+            {opt.selected ? <Icon name="Check" size={14} color={colors.accent} /> : null}
+          </Pressable>
+        ))
+      )}
+    </View>
+  );
+
+  return (
+    <View {...popoverScopeProps(scopeId)} style={{ position: "relative", zIndex: open ? 40 : 1 }}>
+      {trigger}
+      {open && !useSheet ? (
+        <View
+          style={{
+            position: "absolute",
+            ...(placement === "top" ? { bottom: "100%", marginBottom: 6 } : { top: "100%", marginTop: 6 }),
+            ...(anchor === "right" ? { right: 0 } : { left: 0 }),
+            minWidth: 220,
+            maxWidth: 320,
+            maxHeight: 320,
+            backgroundColor: colors.surface1,
+            borderWidth: 1,
+            borderColor: colors.border,
+            borderRadius: 8,
+            shadowColor: "#000",
+            shadowOpacity: 0.18,
+            shadowRadius: 12,
+            shadowOffset: { width: 0, height: 4 },
+            overflow: "hidden",
+            zIndex: 50,
+          }}
+        >
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              paddingHorizontal: 10,
+              paddingVertical: 7,
+              borderBottomWidth: 1,
+              borderBottomColor: colors.border,
+            }}
+          >
+            <Text
+              numberOfLines={1}
+              style={{
+                fontSize: Math.max(11, uiFontSize - 1),
+                fontWeight: "600",
+                color: colors.foregroundMuted,
+              }}
+            >
+              {title}
+            </Text>
+            {headerAction}
+          </View>
+          <ScrollView style={{ maxHeight: 270 }}>{renderRows()}</ScrollView>
+        </View>
+      ) : null}
+
+      {useSheet ? (
+        <Modal title={title} open={open} onOpenChange={onOpenChange}>
+          <Modal.Content scrollable contentContainerStyle={{ padding: 8, gap: 4 }}>
+            {headerAction ? <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}>{headerAction}</View> : null}
+            {renderRows()}
+          </Modal.Content>
+        </Modal>
+      ) : null}
+    </View>
+  );
+}

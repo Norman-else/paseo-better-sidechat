@@ -1,0 +1,9 @@
+{
+  "id": "paseo-better-sidechat",
+  "name": "Better Sidechat",
+  "description": "Contextual Claude sidechat for Paseo with full host theme, thinking, and collapse settings adaptation.",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.16.0"
+  }
+}
