@@ -42,6 +42,7 @@ import {
   buildAiStarterGenerationPrompt,
   buildContextualStarterPrompts,
   buildDefaultStarterPrompts,
+  buildRecencyWeightedStarterDigest,
   computeMainStarterFingerprint,
   detectConversationLanguage,
   parseAiStarterResponse,
@@ -947,19 +948,16 @@ export default function contribute(server: PluginServerContext) {
             providerDefaultModeId: picked.providerEntry?.defaultModeId,
           });
 
-          const digestObj = buildMainContextDigest({
-            agentId,
+          const starterDigest = buildRecencyWeightedStarterDigest({
             title: timeline.agent!.title,
-            provider: timeline.agent!.provider,
-            model: timeline.agent!.model,
             cwd: effectiveCwd,
             status: timeline.agent!.status,
             entries: timeline.entries,
-            maxTurns: 5,
           });
           const { languageTag } = detectConversationLanguage(timeline.entries, locale);
           const prompt = buildAiStarterGenerationPrompt({
-            digest: digestObj.digest,
+            latestTurnBlock: starterDigest.latestTurnBlock,
+            earlierBackgroundBlock: starterDigest.earlierBackgroundBlock,
             languageTag,
           });
 

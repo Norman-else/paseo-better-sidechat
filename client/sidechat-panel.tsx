@@ -1356,9 +1356,13 @@ function SidechatSurface({
   const shortcutLabel =
     appearance.sendShortcut === "mod-enter" ? t("modEnterShortcut") : t("enterShortcut");
 
-  // Track when the active main agent finishes a turn (`running` -> `idle`) so empty-state
-  // follow-up suggestions automatically update without spamming mid-stream deltas.
+  // Track when the active main agent finishes a turn (`running` -> `idle`) or updates while idle
+  // so empty-state follow-up suggestions always reflect the newest main message immediately.
   const prevMainStatusRef = useRef<string | null>(null);
+  const settledMainUpdatedAtRef = useRef<string | null>(null);
+  if (mainAgent && mainAgent.status !== "running") {
+    settledMainUpdatedAtRef.current = mainAgent.updatedAt;
+  }
   const [mainTurnSettleEpoch, setMainTurnSettleEpoch] = useState(0);
   useEffect(() => {
     const nextStatus = mainAgent?.status ?? null;
@@ -1369,17 +1373,18 @@ function SidechatSurface({
   }, [mainAgent?.status]);
 
   const isEmptyStarterView = !activeSideAgentId && projectedRows.length === 0 && !loadingTimeline;
+  const settledMainStamp = `${mainTurnSettleEpoch}:${settledMainUpdatedAtRef.current ?? ""}`;
 
   const instantStartersQuery = useQuery({
     queryKey: [
       "sidechat-starters-instant",
       host.id,
       mainAgentId,
-      mainTurnSettleEpoch,
+      settledMainStamp,
       locale,
     ] as const,
     enabled: Boolean(mainAgentId && isEmptyStarterView),
-    staleTime: 15_000,
+    staleTime: 2_000,
     queryFn: () =>
       callStarterSuggestions({
         agentId: mainAgentId!,

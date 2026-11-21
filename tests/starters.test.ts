@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildAiStarterGenerationPrompt,
   buildContextualStarterPrompts,
+  buildRecencyWeightedStarterDigest,
   computeMainStarterFingerprint,
   detectConversationLanguage,
   parseAiStarterResponse,
@@ -231,8 +232,107 @@ test("computeMainStarterFingerprint stays stable across streaming tokens while r
   assert.notEqual(idleFp1, idleFp2);
 
   const prompt = buildAiStarterGenerationPrompt({
-    digest: "Main session: Test",
+    latestTurnBlock: "Main session: Test",
     languageTag: "zh-CN",
   });
   assert.ok(prompt.includes("Simplified Chinese"));
+  assert.ok(prompt.includes('priority="HIGHEST"'));
+});
+
+test("multi-turn extraction and digest strictly prioritize the latest main agent message over older resolved turns", () => {
+  const longMiddle = "已完成常规模块检查。\n".repeat(120);
+  const entries: TimelineEntryLike[] = [
+    {
+      item: {
+        type: "user_message",
+        id: "u-old",
+        text: "先修一下 OLD-101 的缓存报错",
+      },
+    },
+    {
+      item: {
+        type: "tool_call",
+        id: "tc-old",
+        name: "Edit",
+        status: "completed",
+        detail: { type: "edit", filePath: "src/legacy/old-cache.ts" },
+      },
+    },
+    {
+      item: {
+        type: "error",
+        id: "err-old",
+        message: "OldRedisTimeoutError: connection refused",
+      },
+    },
+    {
+      item: {
+        type: "assistant_message",
+        id: "a-old",
+        text: "OLD-101 里需要决定“用 Redis 还是 Memcached”，共有 10 个子任务，4 个已完成，另外 `OLD_CACHE_TTL` 还没核实。",
+      },
+    },
+    {
+      item: {
+        type: "user_message",
+        id: "u-latest",
+        text: "好，缓存先不管了，现在看 NEW-888 的工具权限路由",
+      },
+    },
+    {
+      item: {
+        type: "tool_call",
+        id: "tc-latest",
+        name: "Edit",
+        status: "completed",
+        detail: { type: "edit", filePath: "src/chat/permission-router.ts" },
+      },
+    },
+    {
+      item: {
+        type: "assistant_message",
+        id: "a-latest",
+        text: [
+          "NEW-888 的两层权限判定已经梳理完，核心在 `allowed_mcp_tools`。",
+          longMiddle,
+          "还没落地或没核实的：",
+          "- 给 mercaso-shopper 填 `allowed_mcp_tools` 会不会进入内部 Slack 路由，还没核实。",
+          "当前共有 12 张单子，9 张 Done；下一步等你确认“新写工具默认自动放行，还是强制弹确认卡片”。",
+        ].join("\n"),
+      },
+    },
+  ];
+
+  const starters = buildContextualStarterPrompts({
+    title: "OLD-101 Cache Investigation",
+    status: "idle",
+    entries,
+    fallbackLocale: "zh-CN",
+  });
+
+  assert.equal(starters.length, 4);
+  // Every top starter comes from Turn 2 (latest message), NEVER from Turn 1!
+  assert.ok(starters[0].prompt.includes("新写工具默认自动放行，还是强制弹确认卡片"));
+  assert.ok(starters[1].title.includes("3 个 单子"));
+  assert.ok(
+    starters.every(
+      (s) =>
+        !s.prompt.includes("OldRedisTimeoutError") &&
+        !s.prompt.includes("用 Redis 还是 Memcached") &&
+        !s.prompt.includes("OLD-101"),
+    ),
+    `Expected zero stale Turn 1 references, got: ${JSON.stringify(starters)}`,
+  );
+
+  // Recency-weighted AI digest preserves the tail of the long latest message inside HIGHEST priority
+  const digest = buildRecencyWeightedStarterDigest({
+    title: "OLD-101 Cache Investigation",
+    cwd: "/repo",
+    status: "idle",
+    entries,
+  });
+  assert.ok(digest.latestTurnBlock.includes("新写工具默认自动放行，还是强制弹确认卡片"));
+  assert.ok(digest.latestTurnBlock.includes("permission-router.ts"));
+  assert.ok(!digest.latestTurnBlock.includes("OldRedisTimeoutError"));
+  assert.ok(digest.earlierBackgroundBlock.includes("OLD-101"));
 });
