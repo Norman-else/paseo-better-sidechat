@@ -1,3 +1,5 @@
+import { extraLocales } from "./locales";
+
 export const en = {
   panelTitle: "Sidechat",
   workspacePanelTitle: "Workspace Sidechat",
@@ -19,6 +21,7 @@ export const en = {
   outlineTitle: "Jump to prompt",
   openSettings: "Sidechat settings",
   collapseAll: "Reset folds",
+  scrollToBottom: "Scroll to bottom",
 
   // Empty state & starters
   emptyTitle: "Ask Claude on the side",
@@ -75,11 +78,15 @@ export const en = {
   // Assistant actions & Main handoff
   copyAnswer: "Copy",
   copied: "Copied to clipboard",
+  copyFailed: "Unable to copy",
   insertToMain: "Insert to main",
   insertedToMain: "Inserted into main composer",
   sendToMain: "Send to main",
   sentToMain: "Sent to main session",
   transferFailed: "Could not send to main session",
+  transferHeaderWithQuestion: 'Context from Sidechat (re: "{{question}}"):',
+  transferHeaderPlain: "Notes from Sidechat:",
+  transferSendFooter: "Please incorporate these findings into the current task.",
 
   // Permissions
   permissionRequired: "Permission requested",
@@ -106,8 +113,11 @@ export const en = {
   // Settings Screen
   settingsHostSyncSection: "Synced Paseo Host Settings",
   settingsHostSyncInfo:
-    "Better Sidechat automatically follows Paseo's Appearance & Chat settings in real time.",
+    "Better Sidechat automatically follows Paseo's Language, Appearance, and Chat settings in real time.",
+  hostLanguageLabel: "Active Paseo Language",
   hostThemeLabel: "Active Paseo Theme",
+  darkMode: "Dark",
+  lightMode: "Light",
   hostReasoningLabel: "Thinking Display (Always expand reasoning)",
   hostReasoningExpanded: "Always expanded",
   hostReasoningCollapsed: "Collapsed when finished",
@@ -147,8 +157,9 @@ export const en = {
 } as const;
 
 export type MessageKey = keyof typeof en;
+export type LocaleTable = Record<MessageKey, string>;
 
-export const zh: Record<MessageKey, string> = {
+export const zh: LocaleTable = {
   panelTitle: "侧边聊天",
   workspacePanelTitle: "工作区侧边聊天",
   pillLabel: "侧边聊天",
@@ -169,6 +180,7 @@ export const zh: Record<MessageKey, string> = {
   outlineTitle: "问题大纲跳转",
   openSettings: "侧边聊天设置",
   collapseAll: "重置展开项",
+  scrollToBottom: "滚动到底部",
 
   // Empty state & starters
   emptyTitle: "随时在侧边向 Claude 提问",
@@ -220,11 +232,15 @@ export const zh: Record<MessageKey, string> = {
   // Assistant actions & Main handoff
   copyAnswer: "复制",
   copied: "已复制到剪贴板",
+  copyFailed: "复制失败",
   insertToMain: "插入主输入框",
   insertedToMain: "已插入主会话输入框",
   sendToMain: "发给主会话",
   sentToMain: "已发送到主会话",
   transferFailed: "发送到主会话失败",
+  transferHeaderWithQuestion: "来自侧边聊天（关于「{{question}}」）的结论：",
+  transferHeaderPlain: "来自侧边聊天的参考结论：",
+  transferSendFooter: "请结合以上结论继续推进当前任务。",
 
   // Permissions
   permissionRequired: "需要工具权限确认",
@@ -250,8 +266,11 @@ export const zh: Record<MessageKey, string> = {
 
   // Settings Screen
   settingsHostSyncSection: "已自动同步的 Paseo 设置",
-  settingsHostSyncInfo: "侧边聊天实时跟随 Paseo「设置 → 外观 / 通用」中的主题、思考展开与折叠策略，无需手动重复配置。",
+  settingsHostSyncInfo: "侧边聊天实时跟随 Paseo「设置 → 通用 / 外观」中的语言、主题、思考展开与折叠策略，无需手动重复配置。",
+  hostLanguageLabel: "当前 Paseo 语言",
   hostThemeLabel: "当前 Paseo 主题",
+  darkMode: "深色",
+  lightMode: "浅色",
   hostReasoningLabel: "思考显示（始终展开推理）",
   hostReasoningExpanded: "默认展开全部思考块",
   hostReasoningCollapsed: "思考完成后自动折叠",
@@ -287,6 +306,33 @@ export const zh: Record<MessageKey, string> = {
   resetAction: "重置",
 };
 
+export const allLocaleResources = {
+  en,
+  zh,
+  "zh-CN": zh,
+  "zh-Hans": zh,
+  "zh-TW": zh,
+  ...extraLocales,
+} as const;
+
+export function resolveLocaleTable(locale: string | undefined): LocaleTable {
+  if (!locale) return en;
+  const trimmed = locale.trim();
+  if (trimmed in allLocaleResources) {
+    return allLocaleResources[trimmed as keyof typeof allLocaleResources];
+  }
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("zh")) return zh;
+  if (lower.startsWith("ja")) return extraLocales.ja;
+  if (lower.startsWith("ko")) return extraLocales.ko;
+  if (lower.startsWith("es")) return extraLocales.es;
+  if (lower.startsWith("fr")) return extraLocales.fr;
+  if (lower.startsWith("pt")) return extraLocales["pt-BR"];
+  if (lower.startsWith("ru")) return extraLocales.ru;
+  if (lower.startsWith("ar")) return extraLocales.ar;
+  return en;
+}
+
 export function formatWorkSummaryLabel(
   counts: {
     thoughtCount: number;
@@ -299,7 +345,7 @@ export function formatWorkSummaryLabel(
   locale: string,
   isLoading = false,
 ): string {
-  const table = locale.toLowerCase().startsWith("zh") ? zh : en;
+  const table = resolveLocaleTable(locale);
   const fill = (template: string, count: number) =>
     template.replace("{{count}}", String(count));
   const parts: string[] = [];

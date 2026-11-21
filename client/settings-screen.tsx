@@ -27,7 +27,7 @@ import { stableScrollbarStyle, useHostAppearance } from "./web";
 export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
   const settings = useSettings(sidechatSettings);
   const appearance = useHostAppearance();
-  const { t } = useMessages();
+  const { t, locale } = useMessages();
   const { colors } = theme;
   const dark = useMemo(() => isDarkSurface(colors.surface0), [colors.surface0]);
 
@@ -75,6 +75,12 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
         }
       >
         <SettingsCard>
+          <SettingsRow label={t("hostLanguageLabel")}>
+            <Text style={{ fontSize: 13, color: colors.foregroundMuted }}>
+              {locale}
+            </Text>
+          </SettingsRow>
+
           <SettingsRow label={t("hostThemeLabel")}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
@@ -93,7 +99,7 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
                 ))}
               </View>
               <Text style={{ fontSize: 13, color: colors.foregroundMuted }}>
-                {`${appearance.themePreference} (${dark ? "Dark" : "Light"})`}
+                {`${appearance.themePreference} (${dark ? t("darkMode") : t("lightMode")})`}
               </Text>
             </View>
           </SettingsRow>

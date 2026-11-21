@@ -1274,7 +1274,7 @@ function SidechatSurface({
         {showScrollToBottom ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Scroll to bottom"
+            accessibilityLabel={t("scrollToBottom")}
             onPress={() => {
               stickToBottomRef.current = true;
               setShowScrollToBottom(false);

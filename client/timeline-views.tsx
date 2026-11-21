@@ -636,7 +636,7 @@ const AssistantMessageRow = memo(function AssistantMessageRow({
             onPress={() => {
               void copyText(item.text).then(
                 () => toast.show(t("copied"), { variant: "success" }),
-                () => toast.error("Copy failed"),
+                () => toast.error(t("copyFailed")),
               );
             }}
             style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [

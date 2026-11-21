@@ -1,4 +1,5 @@
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import { resolveLocaleTable } from "./messages";
 
 export const SIDECHAT_CONTEXT_OPEN = "<sidechat_context>";
 export const SIDECHAT_CONTEXT_CLOSE = "</sidechat_context>";
@@ -225,23 +226,16 @@ export function formatTransferToMainPrompt(input: {
   mode: "insert" | "send";
   locale?: string;
 }): string {
-  const zh = Boolean(input.locale && input.locale.toLowerCase().startsWith("zh"));
+  const table = resolveLocaleTable(input.locale);
   const cleanAnswer = input.answer.trim();
   const cleanQuestion = input.question ? stripInjectedBlocks(input.question) : "";
-  if (zh) {
-    const header = cleanQuestion
-      ? `来自侧边聊天（关于「${truncateText(cleanQuestion.replace(/\s+/g, " "), 60)}」）的结论：`
-      : "来自侧边聊天的参考结论：";
-    const tail =
-      input.mode === "send"
-        ? "\n\n请结合以上结论继续推进当前任务。"
-        : "\n\n";
-    return `${header}\n\n${cleanAnswer}${tail}`;
-  }
   const header = cleanQuestion
-    ? `Context from Sidechat (re: "${truncateText(cleanQuestion.replace(/\s+/g, " "), 60)}"):`
-    : "Notes from Sidechat:";
-  const tail = input.mode === "send" ? "\n\nPlease incorporate these findings into the current task." : "\n\n";
+    ? table.transferHeaderWithQuestion.replace(
+        "{{question}}",
+        truncateText(cleanQuestion.replace(/\s+/g, " "), 60),
+      )
+    : table.transferHeaderPlain;
+  const tail = input.mode === "send" ? `\n\n${table.transferSendFooter}` : "\n\n";
   return `${header}\n\n${cleanAnswer}${tail}`;
 }
 
