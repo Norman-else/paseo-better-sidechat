@@ -392,7 +392,7 @@ test("shouldUseAiStarters never contacts an AI provider when starterModelMode is
   assert.equal(shouldUseAiStarters({ starterModelMode: "inherit", requestedMode: "ai" }), true);
 });
 
-test("resolveStarterHelperSafetyConfig disables built-in Claude tools and refuses permissive fallbacks", () => {
+test("resolveStarterHelperSafetyConfig only allows enforced tool-free helpers and rejects read-capable modes", () => {
   // Claude: explicitly disables all built-in tools and MCP servers, and uses plan when available.
   const claudeWithPlan = resolveStarterHelperSafetyConfig({
     provider: "claude",
@@ -424,13 +424,14 @@ test("resolveStarterHelperSafetyConfig disables built-in Claude tools and refuse
     },
   });
 
-  // Non-Claude provider with read-only or plan mode uses only that restrictive mode.
+  // Non-Claude providers cannot enforce tool-free access (even in read-only or plan modes),
+  // so they must return allowed: false and fall back to local contextual suggestions.
   assert.deepEqual(
     resolveStarterHelperSafetyConfig({
       provider: "codex",
       availableModes: [{ id: "default" }, { id: "read-only" }, { id: "full-access" }],
     }),
-    { allowed: true, modeId: "read-only" },
+    { allowed: false },
   );
   assert.deepEqual(
     resolveStarterHelperSafetyConfig({
@@ -439,18 +440,6 @@ test("resolveStarterHelperSafetyConfig disables built-in Claude tools and refuse
         { id: "https://agentclientprotocol.com/protocol/session-modes#agent" },
         { id: "https://agentclientprotocol.com/protocol/session-modes#plan" },
       ],
-    }),
-    {
-      allowed: true,
-      modeId: "https://agentclientprotocol.com/protocol/session-modes#plan",
-    },
-  );
-
-  // Non-Claude provider without a restrictive mode MUST NOT fall back to default/auto/full-access.
-  assert.deepEqual(
-    resolveStarterHelperSafetyConfig({
-      provider: "codex",
-      availableModes: [{ id: "default" }, { id: "auto" }, { id: "full-access" }],
     }),
     { allowed: false },
   );
