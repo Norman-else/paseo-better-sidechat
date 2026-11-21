@@ -67,6 +67,7 @@ export const createThreadRpc = defineRpc({
     thinkingOptionId: z.string().nullable().optional(),
     attachMainContext: z.boolean().default(false),
     quotedSelection: z.string().nullable().optional(),
+    deferInitialSend: z.boolean().default(false),
   }),
   output: z.object({
     thread: sidechatThreadSchema,

@@ -299,3 +299,65 @@ test("fromTimelineSnapshot converts Paseo parent->child agent_message tool_call 
     assert.equal(snapshot.items[0].optimistic, undefined);
   }
 });
+
+test("projectTimelineRows keeps trailing active tool call visible during an open turn, then folds on completion", () => {
+  const runningSnapshot = fromTimelineSnapshot({
+    epoch: "e2",
+    window: { minSeq: 0, maxSeq: 4, nextSeq: 5 },
+    agent: { status: "running", activeTurn: { turnId: "t-live", startedAt: "2026-11-21T03:00:00Z" } },
+    entries: [
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:00Z",
+        seqStart: 1,
+        seqEnd: 1,
+        item: { type: "user_message", text: "Check git diff" },
+      },
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:01Z",
+        seqStart: 2,
+        seqEnd: 2,
+        item: {
+          type: "tool_call",
+          callId: "c1",
+          name: "Read",
+          status: "completed",
+          error: null,
+          detail: { type: "read", filePath: "package.json" },
+        },
+      },
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:02Z",
+        seqStart: 3,
+        seqEnd: 3,
+        item: {
+          type: "tool_call",
+          callId: "c2",
+          name: "Bash",
+          status: "running",
+          error: null,
+          detail: { type: "shell", command: "git status" },
+        },
+      },
+    ],
+  });
+
+  const liveRows = projectTimelineRows(runningSnapshot.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: true,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+
+  // Both completed c1 and running c2 remain visible individually while c2 is actively running!
+  assert.deepEqual(
+    liveRows.map((r) => r.kind),
+    ["user_message", "tool_call", "tool_call"],
+  );
+});

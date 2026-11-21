@@ -313,12 +313,20 @@ export default function contribute(server: PluginServerContext) {
         provider: providerModel,
         ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
         ...(resolvedThinkingId ? { thinkingOptionId: resolvedThinkingId } : {}),
+        ...(prefs.fastStartup && provider === "claude"
+          ? {
+              mcpServers: {},
+              options: { extraArgs: { "strict-mcp-config": null } },
+            }
+          : {}),
         systemPrompt: prefs.readOnlyGuard
           ? SIDECHAT_READONLY_SYSTEM_PROMPT
           : SIDECHAT_EDITABLE_SYSTEM_PROMPT,
       },
-      prompt: sentPrompt,
-      ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+      ...(!input.deferInitialSend ? { prompt: sentPrompt } : {}),
+      ...(!input.deferInitialSend && input.clientMessageId
+        ? { clientMessageId: input.clientMessageId }
+        : {}),
     });
 
     const snapshot = handle.current();

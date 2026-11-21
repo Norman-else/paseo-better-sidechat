@@ -929,15 +929,36 @@ export function projectTimelineRows(
     segmentBody: ReadonlyArray<SidechatItem>,
     questionText: string | null,
     groupToolCalls: boolean,
+    keepLiveActiveVisible = false,
   ) => {
     let run: Array<SidechatThoughtItem | SidechatToolCallItem> = [];
+    const lastSegmentItem = segmentBody.at(-1) ?? null;
     const flushRun = () => {
       if (run.length === 0) return;
-      if (!groupToolCalls || run.length === 1) {
+      if (!groupToolCalls) {
         for (const entry of run) {
           rows.push(projectSingleWorkOrAssistant(entry, options, questionText, false));
         }
-      } else {
+        run = [];
+        return;
+      }
+
+      // While a turn is actively running, keep any trailing running/latest step visible in place
+      // so the user always sees real-time progress (which file is being read, live thought, etc.).
+      const liveTrailing: Array<SidechatThoughtItem | SidechatToolCallItem> = [];
+      if (keepLiveActiveVisible) {
+        while (
+          run.length > 0 &&
+          (isItemLoading(run[run.length - 1]) || run[run.length - 1] === lastSegmentItem)
+        ) {
+          liveTrailing.unshift(run.pop()!);
+          if (liveTrailing.length >= 2) break;
+        }
+      }
+
+      if (run.length === 1) {
+        rows.push(projectSingleWorkOrAssistant(run[0], options, questionText, false));
+      } else if (run.length > 1) {
         const groupId = `group:${run[0].id}`;
         const expanded = options.expandedGroupIds.has(groupId);
         rows.push({
@@ -953,6 +974,10 @@ export function projectTimelineRows(
             rows.push(projectSingleWorkOrAssistant(entry, options, questionText, true));
           }
         }
+      }
+
+      for (const liveEntry of liveTrailing) {
+        rows.push(projectSingleWorkOrAssistant(liveEntry, options, questionText, false));
       }
       run = [];
     };
@@ -990,20 +1015,22 @@ export function projectTimelineRows(
       });
     }
 
+    const isTurnOpen = isLatestSegment && options.isTurnActive;
+
     if (options.chatDisplay !== "collapseTurns") {
       pushWithToolGrouping(
         segment.body,
         questionText,
         options.chatDisplay === "collapseToolCalls",
+        isTurnOpen,
       );
       return;
     }
 
     // `collapseTurns`: Mirror Paseo's turn folding:
     // While the latest turn is actively running, keep intermediate work grouped with `collapseToolCalls`
-    // so live progress is visible; once the turn finishes (and has a final assistant_message), fold all
+    // (and active trailing step unfolded) so live progress is visible; once the turn finishes, fold all
     // pre-answer intermediate steps into a single `turn_summary` row!
-    const isTurnOpen = isLatestSegment && options.isTurnActive;
     let lastAssistantIdx = -1;
     for (let i = segment.body.length - 1; i >= 0; i -= 1) {
       if (segment.body[i].kind === "assistant_message") {
@@ -1013,7 +1040,7 @@ export function projectTimelineRows(
     }
 
     if (isTurnOpen || lastAssistantIdx <= 0) {
-      pushWithToolGrouping(segment.body, questionText, true);
+      pushWithToolGrouping(segment.body, questionText, true, isTurnOpen);
       return;
     }
 

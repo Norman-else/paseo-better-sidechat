@@ -75,6 +75,7 @@ import { useMessages } from "./messages";
 import { type MenuOption, PopoverMenu } from "./popover-menu";
 import { Spinner } from "./spinner";
 import {
+  LiveTurnStatusRow,
   PermissionRequestBanner,
   SidechatTimelineRowView,
 } from "./timeline-views";
@@ -359,10 +360,16 @@ function SidechatSurface({
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
 
-  // Scroll management
+  // Scroll management & initial-send coordination
   const listRef = useRef<NativeFlatList<ProjectedRow> | null>(null);
   const stickToBottomRef = useRef(true);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [turnStartedAtMs, setTurnStartedAtMs] = useState<number | null>(null);
+  const pendingInitialSendRef = useRef<{
+    agentId: string;
+    sentPrompt: string;
+    clientMessageId: string;
+  } | null>(null);
 
   useEffect(() => {
     return watchExternalSelection(panelScopeId, (selected) => {
@@ -387,7 +394,16 @@ function SidechatSurface({
 
     let cancelled = false;
     const handle = paseo.agents.ref(activeSideAgentId);
-    setLoadingTimeline(true);
+    const pendingSend =
+      pendingInitialSendRef.current?.agentId === activeSideAgentId
+        ? pendingInitialSendRef.current
+        : null;
+    if (pendingSend) {
+      pendingInitialSendRef.current = null;
+      setLoadingTimeline(false);
+    } else {
+      setLoadingTimeline(true);
+    }
 
     const fetchLatestSnapshot = async () => {
       try {
@@ -445,16 +461,54 @@ function SidechatSurface({
       }
     });
 
-    void fetchLatestSnapshot();
+    if (pendingSend) {
+      void (async () => {
+        try {
+          await unsubTimeline.ready.catch(() => {});
+          if (cancelled) return;
+          await handle.send(pendingSend.sentPrompt, {
+            messageId: pendingSend.clientMessageId,
+          });
+        } catch (error) {
+          if (!cancelled) {
+            toast.error(error instanceof Error ? error.message : "Failed to send message");
+            setTimelineState((prev) => ({ ...prev, isTurnActive: false }));
+          }
+        }
+      })();
+    } else {
+      void fetchLatestSnapshot();
+    }
 
     return () => {
       cancelled = true;
       unsubTimeline();
       unsubAgent();
     };
-  }, [activeSideAgentId, paseo]);
+  }, [activeSideAgentId, paseo, toast]);
 
   const isBusy = creatingThread || timelineState.isTurnActive;
+
+  useEffect(() => {
+    if (!isBusy) {
+      setTurnStartedAtMs(null);
+    } else if (turnStartedAtMs === null) {
+      setTurnStartedAtMs(Date.now());
+    }
+  }, [isBusy, turnStartedAtMs]);
+
+  const liveTurnPhase = useMemo<"starting" | "thinking" | "working" | null>(() => {
+    if (creatingThread) return "starting";
+    if (!timelineState.isTurnActive) return null;
+    const last = timelineState.items.at(-1);
+    if (!last || last.kind === "user_message") return "thinking";
+    if (last.kind === "assistant_message" && last.streaming && last.text.trim().length > 0) {
+      return null;
+    }
+    if (last.kind === "thought" && last.status === "loading") return null;
+    if (last.kind === "tool_call" && last.status === "running") return null;
+    return "working";
+  }, [creatingThread, timelineState.isTurnActive, timelineState.items]);
 
   // Determine whether main session context will be attached on next message.
   const isFirstTurn = !activeSideAgentId || timelineState.items.length === 0;
@@ -542,6 +596,7 @@ function SidechatSurface({
       const targetSideAgentId = options?.forceNewThread ? null : latestTabStateRef.current.sideAgentId;
 
       if (!targetSideAgentId) {
+        setTurnStartedAtMs(Date.now());
         setCreatingThread(true);
         patchTabState({ draft: "", contextOverride: null });
         setTimelineState(
@@ -571,11 +626,25 @@ function SidechatSurface({
             thinkingOptionId: effectiveThinkingId,
             attachMainContext: shouldAttachMainContext,
             quotedSelection: quoteToSend,
+            deferInitialSend: true,
           });
 
+          pendingInitialSendRef.current = {
+            agentId: created.thread.agentId,
+            sentPrompt: created.sentPrompt,
+            clientMessageId,
+          };
+          // Re-align optimistic message with full composed prompt (including main context badge)
+          setTimelineState(
+            appendOptimisticUserMessage(createEmptyTimelineState(), {
+              text: created.sentPrompt,
+              clientMessageId,
+            }),
+          );
           patchTabState({ sideAgentId: created.thread.agentId });
           void queryClient.invalidateQueries({ queryKey: threadsQueryKey });
         } catch (error) {
+          pendingInitialSendRef.current = null;
           toast.error(error instanceof Error ? error.message : "Failed to start sidechat");
           setTimelineState(createEmptyTimelineState());
           patchTabState({ draft: trimmed });
@@ -586,6 +655,7 @@ function SidechatSurface({
       }
 
       // Existing sidechat thread: optionally attach fresh main-session context if enabled.
+      setTurnStartedAtMs(Date.now());
       patchTabState({ draft: "", contextOverride: null });
       let mainDigestText: string | null = null;
       if (shouldAttachMainContext && mainAgentId) {
@@ -1240,6 +1310,7 @@ function SidechatSurface({
           <FlatList
             ref={listRef}
             data={projectedRows}
+            extraData={timelineState}
             keyExtractor={(item) => item.id}
             style={[{ flex: 1 }, stableScrollbarStyle]}
             contentContainerStyle={{
@@ -1251,6 +1322,15 @@ function SidechatSurface({
             onScroll={handleScroll}
             scrollEventThrottle={64}
             onScrollToIndexFailed={() => {}}
+            ListFooterComponent={
+              <LiveTurnStatusRow
+                phase={liveTurnPhase}
+                startedAtMs={turnStartedAtMs}
+                theme={theme}
+                appearance={appearance}
+                t={t}
+              />
+            }
             renderItem={({ item }) => (
               <SidechatTimelineRowView
                 row={item}

@@ -191,6 +191,14 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
           />
 
           <SettingsSwitch
+            label={t("settingFastStartupLabel")}
+            hint={t("settingFastStartupHint")}
+            value={values.fastStartup}
+            disabled={disabled}
+            onValueChange={(fastStartup) => update({ fastStartup })}
+          />
+
+          <SettingsSwitch
             label={t("settingComposerPillLabel")}
             hint={t("settingComposerPillHint")}
             value={values.showComposerPill}

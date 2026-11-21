@@ -13,6 +13,7 @@ export const sidechatSettingsSchema = z.object({
   defaultClaudeMode: defaultClaudeModeSchema.default("auto"),
   readOnlyGuard: z.boolean().default(true),
   preferClaudeProvider: z.boolean().default(true),
+  fastStartup: z.boolean().default(true),
   showComposerPill: z.boolean().default(true),
 });
 
@@ -24,6 +25,7 @@ export const DEFAULT_SIDECHAT_SETTINGS: SidechatSettingsValues = {
   defaultClaudeMode: "auto",
   readOnlyGuard: true,
   preferClaudeProvider: true,
+  fastStartup: true,
   showComposerPill: true,
 };
 

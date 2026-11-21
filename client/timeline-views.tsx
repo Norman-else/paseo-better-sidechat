@@ -4,7 +4,7 @@ import type {
   AgentPermissionRequest,
   AgentPermissionResponse,
 } from "@getpaseo/protocol/agent-types";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { DerivedPalette, HostAppearanceSettings } from "../shared/appearance";
 import { formatWorkSummaryLabel } from "../shared/messages";
@@ -614,10 +614,24 @@ const AssistantMessageRow = memo(function AssistantMessageRow({
   const btnHeight = compact ? 34 : 24;
   const btnFont = Math.max(11, appearance.uiBaseFontSize - 2);
 
+  const hasBlockMarkdown = /```|^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|\|.*\|)/m.test(item.text);
+
   return (
     <View style={{ paddingVertical: 4, gap: 4 }}>
       <View style={{ paddingHorizontal: 2 }}>
-        <Markdown>{item.text}</Markdown>
+        {item.streaming && !hasBlockMarkdown ? (
+          <StreamedText
+            text={item.text}
+            phase="streaming"
+            style={{
+              fontSize: appearance.contentFontSize,
+              lineHeight: appearance.contentLineHeight,
+              color: colors.foreground,
+            }}
+          />
+        ) : (
+          <Markdown>{item.text}</Markdown>
+        )}
       </View>
 
       {!item.streaming && item.text.trim() ? (
@@ -1113,6 +1127,66 @@ export function PermissionRequestBanner({
           </>
         )}
       </View>
+    </View>
+  );
+}
+
+export function LiveTurnStatusRow({
+  phase,
+  startedAtMs,
+  theme,
+  appearance,
+  t,
+}: {
+  phase: "starting" | "thinking" | "working" | null;
+  startedAtMs: number | null;
+  theme: PluginTheme;
+  appearance: HostAppearanceSettings;
+  t: TranslateFn;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!phase) return;
+    setNowMs(Date.now());
+    const interval = setInterval(() => setNowMs(Date.now()), 500);
+    return () => clearInterval(interval);
+  }, [phase, startedAtMs]);
+
+  if (!phase) return null;
+  const { colors } = theme;
+  const elapsedSec =
+    startedAtMs !== null ? Math.max(1, Math.floor((nowMs - startedAtMs) / 1000)) : 1;
+
+  const label =
+    phase === "starting"
+      ? t("startingSession")
+      : phase === "working"
+        ? t("analyzingElapsed", { seconds: elapsedSec })
+        : t("thinkingElapsed", { seconds: elapsedSec });
+
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 7,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        marginTop: 2,
+      }}
+    >
+      <Spinner size={13} color={colors.accent} label={label} />
+      <Text
+        numberOfLines={1}
+        style={{
+          fontSize: Math.max(12, appearance.uiBaseFontSize - 1),
+          color: colors.foregroundMuted,
+          fontWeight: "500",
+        }}
+      >
+        {label}
+      </Text>
     </View>
   );
 }

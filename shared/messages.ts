@@ -53,7 +53,10 @@ export const en = {
   mainContextTurns: "{{count}} recent turns",
 
   // Timeline: Thinking & Collapse
+  startingSession: "Starting Claude sidechat…",
   thinkingStreaming: "Thinking…",
+  thinkingElapsed: "Claude is thinking… {{seconds}}s",
+  analyzingElapsed: "Working… {{seconds}}s",
   thinkingDone: "Thought process",
   showMore: "Show more",
   showLess: "Show less",
@@ -149,6 +152,9 @@ export const en = {
   settingPreferClaudeLabel: "Prefer Claude models",
   settingPreferClaudeHint:
     "Default new sidechat threads to Claude even when the main session uses another provider",
+  settingFastStartupLabel: "Fast startup (skip external MCP servers)",
+  settingFastStartupHint:
+    "Avoids 15–30s cold-start delays from external MCP servers when opening a new Sidechat thread",
   settingComposerPillLabel: "Show Sidechat button in main composer",
   settingComposerPillHint: "Adds a one-click Sidechat pill to active main sessions",
   resetDefaultsLabel: "Reset defaults",
@@ -207,7 +213,10 @@ export const zh: LocaleTable = {
   mainContextTurns: "最近 {{count}} 轮对话",
 
   // Timeline: Thinking & Collapse
+  startingSession: "正在启动 Claude 侧边会话…",
   thinkingStreaming: "思考中…",
+  thinkingElapsed: "Claude 正在思考… {{seconds}}s",
+  analyzingElapsed: "正在处理步骤… {{seconds}}s",
   thinkingDone: "思考过程",
   showMore: "展开全文",
   showLess: "收起",
@@ -299,6 +308,8 @@ export const zh: LocaleTable = {
   settingReadOnlyGuardHint: "默认约束侧边 Claude 只读取和检索代码、不擅自修改工作区文件，避免与主会话冲突",
   settingPreferClaudeLabel: "优先使用 Claude 模型",
   settingPreferClaudeHint: "新建侧边对话时优先选择 Claude 模型并继承主会话的思考强度设置",
+  settingFastStartupLabel: "极速冷启动（跳过外部 MCP 服务加载）",
+  settingFastStartupHint: "新建侧边对话时跳过外部 MCP 握手阻塞，将首条消息响应前的等待从数十秒缩短至约 1–2 秒",
   settingComposerPillLabel: "在主输入框显示「侧边聊天」快捷按钮",
   settingComposerPillHint: "在活跃的主会话底部输入栏显示一键打开侧边聊天入口",
   resetDefaultsLabel: "恢复默认设置",
