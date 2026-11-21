@@ -10,8 +10,10 @@ import {
   createThreadRpc,
   forgeInfoRpc,
   forgeSearchRpc,
+  invokeExternalPluginRpc,
   listAttachmentSourcesRpc,
   listThreadsRpc,
+  listTimelinePluginsRpc,
   mainContextRpc,
   preferencesRpc,
   searchAttachmentSourceRpc,
@@ -743,6 +745,14 @@ export default function contribute(server: PluginServerContext) {
       sideAgentId: input.sideAgentId,
       mainAgentId: input.mainAgentId,
     }),
+  }));
+
+  server.handle(listTimelinePluginsRpc, async () => ({
+    plugins: await attachmentService.listTimelinePluginBundles(),
+  }));
+
+  server.handle(invokeExternalPluginRpc, async ({ pluginId, method, params }) => ({
+    output: await attachmentService.invokeExternalPlugin({ pluginId, method, params }),
   }));
 
   server.addHook("workspace.archive.after", async ({ workspace }, { paseo }) => {

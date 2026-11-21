@@ -1,4 +1,5 @@
 import type { PluginTheme } from "@getpaseo/plugin";
+import type { PluginHostProps } from "@getpaseo/plugin/client";
 import { copyText, Icon, Markdown, StreamedText, useToast } from "@getpaseo/plugin/client/ui";
 import type {
   AgentPermissionRequest,
@@ -14,12 +15,17 @@ import {
   type SidechatAssistantItem,
   type SidechatCompactionItem,
   type SidechatNotificationItem,
+  type SidechatPluginItem,
   type SidechatThoughtItem,
   type SidechatTodoItem,
   type SidechatToolCallItem,
   type SidechatUserItem,
   type WorkSummaryCounts,
 } from "../shared/timeline";
+import {
+  type EvaluatedExternalTimelinePlugin,
+  ExternalPluginTimelineItemView,
+} from "./external-timeline-plugins";
 import type { useMessages } from "./messages";
 import { Spinner } from "./spinner";
 import { codeScopeProps, pointerCursorStyle } from "./web";
@@ -590,6 +596,125 @@ const SummaryGroupRow = memo(function SummaryGroupRow({
   );
 });
 
+function TurnResponseActionsBar({
+  answerText,
+  questionText,
+  canInsertToMain,
+  canSendToMain,
+  onInsertToMain,
+  onSendToMain,
+  theme,
+  appearance,
+  compact,
+  t,
+}: {
+  answerText: string;
+  questionText: string | null;
+  canInsertToMain: boolean;
+  canSendToMain: boolean;
+  onInsertToMain(question: string | null, answer: string): void;
+  onSendToMain(question: string | null, answer: string): void;
+  theme: PluginTheme;
+  appearance: HostAppearanceSettings;
+  compact: boolean;
+  t: TranslateFn;
+}) {
+  const { colors } = theme;
+  const toast = useToast();
+  const btnHeight = compact ? 34 : 24;
+  const btnFont = Math.max(11, appearance.uiBaseFontSize - 2);
+
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 4,
+        marginTop: 2,
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t("copyAnswer")}
+        onPress={() => {
+          void copyText(answerText).then(
+            () => toast.show(t("copied"), { variant: "success" }),
+            () => toast.error(t("copyFailed")),
+          );
+        }}
+        style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+          {
+            minHeight: btnHeight,
+            paddingHorizontal: 7,
+            borderRadius: 5,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
+          },
+          pointerCursorStyle,
+        ]}
+      >
+        <Icon name="Copy" size={12} color={colors.foregroundMuted} />
+        <Text style={{ fontSize: btnFont, color: colors.foregroundMuted }}>
+          {t("copyAnswer")}
+        </Text>
+      </Pressable>
+
+      {canInsertToMain ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("insertToMain")}
+          onPress={() => onInsertToMain(questionText, answerText)}
+          style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+            {
+              minHeight: btnHeight,
+              paddingHorizontal: 7,
+              borderRadius: 5,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+              backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
+            },
+            pointerCursorStyle,
+          ]}
+        >
+          <Icon name="CornerDownLeft" size={12} color={colors.foregroundMuted} />
+          <Text style={{ fontSize: btnFont, color: colors.foregroundMuted }}>
+            {t("insertToMain")}
+          </Text>
+        </Pressable>
+      ) : null}
+
+      {canSendToMain ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("sendToMain")}
+          onPress={() => onSendToMain(questionText, answerText)}
+          style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+            {
+              minHeight: btnHeight,
+              paddingHorizontal: 7,
+              borderRadius: 5,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+              backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
+            },
+            pointerCursorStyle,
+          ]}
+        >
+          <Icon name="Send" size={12} color={colors.foregroundMuted} />
+          <Text style={{ fontSize: btnFont, color: colors.foregroundMuted }}>
+            {t("sendToMain")}
+          </Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
 const AssistantMessageRow = memo(function AssistantMessageRow({
   item,
   questionText,
@@ -612,10 +737,6 @@ const AssistantMessageRow = memo(function AssistantMessageRow({
   onSendToMain(question: string | null, answer: string): void;
 }) {
   const { colors } = theme;
-  const toast = useToast();
-  const btnHeight = compact ? 34 : 24;
-  const btnFont = Math.max(11, appearance.uiBaseFontSize - 2);
-
   const hasBlockMarkdown = /```|^\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|\|.*\|)/m.test(item.text);
 
   return (
@@ -637,93 +758,77 @@ const AssistantMessageRow = memo(function AssistantMessageRow({
       </View>
 
       {showActions && !item.streaming && item.text.trim() ? (
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: 4,
-            marginTop: 2,
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("copyAnswer")}
-            onPress={() => {
-              void copyText(item.text).then(
-                () => toast.show(t("copied"), { variant: "success" }),
-                () => toast.error(t("copyFailed")),
-              );
-            }}
-            style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-              {
-                minHeight: btnHeight,
-                paddingHorizontal: 7,
-                borderRadius: 5,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 4,
-                backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-              },
-              pointerCursorStyle,
-            ]}
-          >
-            <Icon name="Copy" size={12} color={colors.foregroundMuted} />
-            <Text style={{ fontSize: btnFont, color: colors.foregroundMuted }}>
-              {t("copyAnswer")}
-            </Text>
-          </Pressable>
+        <TurnResponseActionsBar
+          answerText={item.text}
+          questionText={questionText}
+          canInsertToMain={canInsertToMain}
+          canSendToMain={canSendToMain}
+          onInsertToMain={onInsertToMain}
+          onSendToMain={onSendToMain}
+          theme={theme}
+          appearance={appearance}
+          compact={compact}
+          t={t}
+        />
+      ) : null}
+    </View>
+  );
+});
 
-          {canInsertToMain ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("insertToMain")}
-              onPress={() => onInsertToMain(questionText, item.text)}
-              style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                {
-                  minHeight: btnHeight,
-                  paddingHorizontal: 7,
-                  borderRadius: 5,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 4,
-                  backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                },
-                pointerCursorStyle,
-              ]}
-            >
-              <Icon name="CornerDownLeft" size={12} color={colors.foregroundMuted} />
-              <Text style={{ fontSize: btnFont, color: colors.foregroundMuted }}>
-                {t("insertToMain")}
-              </Text>
-            </Pressable>
-          ) : null}
-
-          {canSendToMain ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("sendToMain")}
-              onPress={() => onSendToMain(questionText, item.text)}
-              style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                {
-                  minHeight: btnHeight,
-                  paddingHorizontal: 7,
-                  borderRadius: 5,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 4,
-                  backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                },
-                pointerCursorStyle,
-              ]}
-            >
-              <Icon name="Send" size={12} color={colors.foregroundMuted} />
-              <Text style={{ fontSize: btnFont, color: colors.foregroundMuted }}>
-                {t("sendToMain")}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
+const PluginTimelineRow = memo(function PluginTimelineRow({
+  item,
+  agentId,
+  host,
+  layout,
+  externalPlugins,
+  questionText,
+  showActions,
+  actionText,
+  canInsertToMain,
+  canSendToMain,
+  onInsertToMain,
+  onSendToMain,
+  theme,
+  appearance,
+  compact,
+  t,
+}: SharedRowVisualProps & {
+  item: SidechatPluginItem;
+  agentId: string;
+  host: PluginHostProps["host"];
+  layout: PluginHostProps["layout"];
+  externalPlugins: ReadonlyArray<EvaluatedExternalTimelinePlugin>;
+  questionText: string | null;
+  showActions: boolean;
+  actionText: string | null;
+  canInsertToMain: boolean;
+  canSendToMain: boolean;
+  onInsertToMain(question: string | null, answer: string): void;
+  onSendToMain(question: string | null, answer: string): void;
+}) {
+  return (
+    <View style={{ paddingVertical: 2, gap: 4 }}>
+      <ExternalPluginTimelineItemView
+        item={item}
+        agentId={agentId}
+        host={host}
+        theme={theme}
+        layout={layout}
+        plugins={externalPlugins}
+      />
+      {showActions && actionText ? (
+        <TurnResponseActionsBar
+          answerText={actionText}
+          questionText={questionText}
+          canInsertToMain={canInsertToMain}
+          canSendToMain={canSendToMain}
+          onInsertToMain={onInsertToMain}
+          onSendToMain={onSendToMain}
+          theme={theme}
+          appearance={appearance}
+          compact={compact}
+          t={t}
+        />
       ) : null}
     </View>
   );
@@ -877,6 +982,10 @@ const CompactionRow = memo(function CompactionRow({
 
 export function SidechatTimelineRowView({
   row,
+  agentId,
+  host,
+  layout,
+  externalPlugins,
   theme,
   palette,
   appearance,
@@ -891,6 +1000,10 @@ export function SidechatTimelineRowView({
   onSendToMain,
 }: SharedRowVisualProps & {
   row: ProjectedRow;
+  agentId: string;
+  host: PluginHostProps["host"];
+  layout: PluginHostProps["layout"];
+  externalPlugins: ReadonlyArray<EvaluatedExternalTimelinePlugin>;
   canInsertToMain: boolean;
   canSendToMain: boolean;
   onToggleItem(id: string): void;
@@ -953,6 +1066,24 @@ export function SidechatTimelineRowView({
           item={row.item}
           questionText={row.questionText}
           showActions={row.showActions}
+          canInsertToMain={canInsertToMain}
+          canSendToMain={canSendToMain}
+          onInsertToMain={onInsertToMain}
+          onSendToMain={onSendToMain}
+        />
+      );
+    case "plugin":
+      return (
+        <PluginTimelineRow
+          {...shared}
+          item={row.item}
+          agentId={agentId}
+          host={host}
+          layout={layout}
+          externalPlugins={externalPlugins}
+          questionText={row.questionText}
+          showActions={row.showActions}
+          actionText={row.actionText}
           canInsertToMain={canInsertToMain}
           canSendToMain={canSendToMain}
           onInsertToMain={onInsertToMain}

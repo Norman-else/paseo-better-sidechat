@@ -31,7 +31,10 @@ type DomEvent = {
 
 declare const window:
   | {
-      localStorage: { getItem(key: string): string | null };
+      localStorage: {
+        getItem(key: string): string | null;
+        setItem?(key: string, value: string): void;
+      };
       addEventListener(type: string, listener: (event: DomEvent) => void, capture?: boolean): void;
       removeEventListener(type: string, listener: (event: DomEvent) => void, capture?: boolean): void;
       getComputedStyle?(el: object): Record<string, string>;
@@ -577,4 +580,38 @@ export function useComposerInputSizing(input: {
     },
     scrollEnabled: resolvedHeight >= PASEO_COMPOSER_MAX_HEIGHT,
   };
+}
+
+export function readDeviceStorageItem(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeDeviceStorageItem(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage?.setItem?.(key, value);
+  } catch {
+    // Ignore storage quota / private browsing errors
+  }
+}
+
+/**
+ * Evaluates a Paseo compiled plugin `clientBundle` (`(function(require) { ... })`)
+ * in the exact same manner as Paseo's `runPluginClientBundle` (`MOD 3978`).
+ */
+export function evaluateCommonJsFactoryBundle(
+  pluginId: string,
+  bundleCode: string,
+): (requireFn: (specifier: string) => unknown) => unknown {
+  const indirectEval = globalThis.eval;
+  const factory: unknown = indirectEval(bundleCode);
+  if (typeof factory !== "function") {
+    throw new Error(`Plugin ${pluginId} client bundle is not executable`);
+  }
+  return factory as (requireFn: (specifier: string) => unknown) => unknown;
 }

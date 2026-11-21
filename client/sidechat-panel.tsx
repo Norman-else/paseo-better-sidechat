@@ -77,6 +77,7 @@ import {
 } from "../shared/settings";
 import {
   appendOptimisticUserMessage,
+  applyTimelinePluginsToItems,
   applyTimelineStreamEvent,
   createEmptyTimelineState,
   extractPromptOutline,
@@ -87,6 +88,7 @@ import {
   type TimelineState,
 } from "../shared/timeline";
 import { SidechatComposerBar } from "./composer-bar";
+import { useExternalTimelinePlugins } from "./external-timeline-plugins";
 import {
   consumeSidechatHandoff,
   subscribeSidechatHandoff,
@@ -719,10 +721,18 @@ function SidechatSurface({
       }),
   });
 
+  // Automatically discover and apply installed Paseo timeline transformer & renderer plugins
+  // (e.g. `Gen-UI` and any future plugins installed on `host.id`).
+  const externalTimelinePlugins = useExternalTimelinePlugins(host.id);
+  const pluginTransformedItems = useMemo(
+    () => applyTimelinePluginsToItems(timelineState.items, externalTimelinePlugins),
+    [timelineState.items, externalTimelinePlugins],
+  );
+
   // Project timeline items into Paseo-faithful display rows (`chatDisplay` + `autoExpandReasoning`).
   const projectedRows = useMemo(
     () =>
-      projectTimelineRows(timelineState.items, {
+      projectTimelineRows(pluginTransformedItems, {
         chatDisplay: appearance.chatDisplay,
         autoExpandReasoning: appearance.autoExpandReasoning,
         isTurnActive: timelineState.isTurnActive,
@@ -730,7 +740,7 @@ function SidechatSurface({
         toggledItemIds,
       }),
     [
-      timelineState.items,
+      pluginTransformedItems,
       timelineState.isTurnActive,
       appearance.chatDisplay,
       appearance.autoExpandReasoning,
@@ -1643,7 +1653,7 @@ function SidechatSurface({
           <FlatList
             ref={listRef}
             data={projectedRows}
-            extraData={timelineState}
+            extraData={{ timelineState, externalTimelinePlugins }}
             keyExtractor={(item) => item.id}
             style={[{ flex: 1 }, stableScrollbarStyle]}
             contentContainerStyle={{
@@ -1670,6 +1680,10 @@ function SidechatSurface({
             renderItem={({ item }) => (
               <SidechatTimelineRowView
                 row={item}
+                agentId={activeSideAgentId ?? mainAgentId ?? ""}
+                host={host}
+                layout={layout}
+                externalPlugins={externalTimelinePlugins}
                 theme={theme}
                 palette={palette}
                 appearance={appearance}

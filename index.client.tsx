@@ -4,6 +4,7 @@ import type {
   PluginText,
   PluginWorkspaceCommandContext,
 } from "@getpaseo/plugin/client";
+import { setHostPluginClientCapabilities } from "./client/external-timeline-plugins";
 import {
   enqueueSidechatHandoff,
   subscribeComposerPillPreference,
@@ -30,6 +31,16 @@ export default function contribute(client: PluginClientContext) {
   const knownAgents = new Map<string, ObservedAgent>();
   let pillEnabled = true;
   const lifetime = new AbortController();
+
+  setHostPluginClientCapabilities({
+    i18n: client.i18n,
+    paseo: client.paseo,
+    openScreen: (input) => client.openScreen(input),
+    openSurface: (id) => client.openSurface(id),
+    openSettings: (id) => client.openSettings(id),
+    composers: (sel) => client.composers(sel),
+    playAudio: (src) => client.playAudio(src),
+  });
 
   client.addAgentPanel({
     id: "better-sidechat",
@@ -276,6 +287,7 @@ export default function contribute(client: PluginClientContext) {
     });
 
   return () => {
+    setHostPluginClientCapabilities(null);
     lifetime.abort();
     unsubPillPref();
     knownAgents.clear();

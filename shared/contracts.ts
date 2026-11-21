@@ -258,3 +258,31 @@ export const slashCommandsRpc = defineRpc({
     commands: z.array(slashCommandItemSchema),
   }),
 });
+
+export const timelinePluginBundleSchema = z.object({
+  id: z.string().min(1),
+  clientBundleHash: z.string().min(1),
+  clientBundle: z.string().min(1),
+});
+
+export type TimelinePluginBundleEntry = z.infer<typeof timelinePluginBundleSchema>;
+
+export const listTimelinePluginsRpc = defineRpc({
+  name: "sidechat.timeline.plugins",
+  input: z.object({}),
+  output: z.object({
+    plugins: z.array(timelinePluginBundleSchema),
+  }),
+});
+
+export const invokeExternalPluginRpc = defineRpc({
+  name: "sidechat.timeline.plugin_rpc",
+  input: z.object({
+    pluginId: z.string().min(1),
+    method: z.string().min(1),
+    params: z.unknown().optional(),
+  }),
+  output: z.object({
+    output: z.unknown(),
+  }),
+});

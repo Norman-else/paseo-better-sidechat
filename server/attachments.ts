@@ -20,6 +20,7 @@ import {
   type UploadedFileAttachmentData,
 } from "../shared/attachments";
 import type { SlashCommandItem, WorkspaceFileEntry } from "../shared/autocomplete";
+import type { TimelinePluginBundleEntry } from "../shared/contracts";
 import { PaseoDaemonRpcLite } from "./daemon-rpc-lite";
 
 type ServerPaseoApi = Parameters<Parameters<PluginServerContext["addHook"]>[1]>[1]["paseo"];
@@ -924,6 +925,58 @@ export class SidechatAttachmentService {
       this.commandsCache.set(cacheKey, { atMs: Date.now(), items: scanned });
     }
     return scanned;
+  }
+
+  /**
+   * Discovers all installed Paseo plugins on the active daemon host that contribute
+   * `addTimelineTransformer` and/or `addTimelineRenderer` (e.g. `Gen-UI` and any future plugins).
+   */
+  async listTimelinePluginBundles(): Promise<TimelinePluginBundleEntry[]> {
+    const client = await this.getConnectedHostClient();
+    if (!client) return [];
+
+    try {
+      const catalog = await client.getPluginCatalog();
+      const out: TimelinePluginBundleEntry[] = [];
+      for (const entry of catalog) {
+        if (!entry.id || entry.id === "paseo-better-sidechat") continue;
+        const bundle = entry.clientBundle;
+        if (!bundle || typeof bundle !== "string") continue;
+        if (bundle.includes("sidechat.timeline.plugins")) continue;
+        if (
+          !bundle.includes("addTimelineTransformer") &&
+          !bundle.includes("addTimelineRenderer")
+        ) {
+          continue;
+        }
+        const hash =
+          entry.clientBundleHash ||
+          createHash("sha256").update(bundle).digest("hex").slice(0, 16);
+        out.push({
+          id: entry.id,
+          clientBundleHash: hash,
+          clientBundle: bundle,
+        });
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  async invokeExternalPlugin(input: {
+    pluginId: string;
+    method: string;
+    params?: unknown;
+  }): Promise<unknown> {
+    if (input.pluginId === "paseo-better-sidechat") {
+      throw new Error("Cannot recursively invoke paseo-better-sidechat");
+    }
+    const client = await this.getConnectedHostClient();
+    if (!client) {
+      throw new Error("Paseo daemon client is unavailable");
+    }
+    return client.invokePluginRpc(input.pluginId, input.method, input.params ?? {});
   }
 
   async close(): Promise<void> {
