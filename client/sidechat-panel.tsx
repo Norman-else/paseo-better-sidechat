@@ -20,7 +20,6 @@ import {
   Loading,
   Modal,
   ScrollView,
-  TextInput,
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import type {
@@ -28,6 +27,7 @@ import type {
   AgentModelDefinition,
   AgentPermissionRequest,
   AgentPermissionResponse,
+  AgentUsage,
 } from "@getpaseo/protocol/agent-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -67,6 +67,7 @@ import {
   type SidechatUserItem,
   type TimelineState,
 } from "../shared/timeline";
+import { SidechatComposerBar } from "./composer-bar";
 import {
   consumeSidechatHandoff,
   subscribeSidechatHandoff,
@@ -81,8 +82,6 @@ import {
 } from "./timeline-views";
 import {
   codeScopeProps,
-  composerWebKeyProps,
-  noOutlineInputStyle,
   panelScopeProps,
   pointerCursorStyle,
   stableScrollbarStyle,
@@ -96,6 +95,7 @@ const tabStateSchema = z.object({
   draftProviderModel: z.string().nullable().default(null),
   draftThinkingId: z.string().nullable().default(null),
   draftModeId: z.string().nullable().default(null),
+  draftFastMode: z.boolean().default(false),
   contextOverride: z.boolean().nullable().default(null),
 });
 
@@ -107,6 +107,7 @@ const DEFAULT_TAB_STATE: SidechatTabState = {
   draftProviderModel: null,
   draftThinkingId: null,
   draftModeId: null,
+  draftFastMode: false,
   contextOverride: null,
 };
 
@@ -336,12 +337,17 @@ function SidechatSurface({
         ? mainAgent?.currentModeId ?? "auto"
         : prefs.defaultClaudeMode);
 
+  const fastModeEnabled = activeSideAgentId
+    ? Boolean(sideComposer?.agent.options?.fast_mode)
+    : tabState.draftFastMode;
+
   // Live timeline & agent snapshot subscription for `activeSideAgentId`
   const [timelineState, setTimelineState] = useState<TimelineState>(() =>
     createEmptyTimelineState(),
   );
   const [loadingTimeline, setLoadingTimeline] = useState(false);
   const [pendingPermissions, setPendingPermissions] = useState<AgentPermissionRequest[]>([]);
+  const [lastUsage, setLastUsage] = useState<AgentUsage | null>(null);
   const [creatingThread, setCreatingThread] = useState(false);
 
   // Per-thread manual expand/collapse toggles
@@ -355,9 +361,6 @@ function SidechatSurface({
   // Menus & Modals
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [outlineMenuOpen, setOutlineMenuOpen] = useState(false);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
-  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
 
   // Scroll management & initial-send coordination
@@ -388,11 +391,13 @@ function SidechatSurface({
     if (!activeSideAgentId) {
       setTimelineState(createEmptyTimelineState());
       setPendingPermissions([]);
+      setLastUsage(null);
       setLoadingTimeline(false);
       return;
     }
 
     let cancelled = false;
+    setLastUsage(null);
     const handle = paseo.agents.ref(activeSideAgentId);
     const pendingSend =
       pendingInitialSendRef.current?.agentId === activeSideAgentId
@@ -414,6 +419,9 @@ function SidechatSurface({
         if (cancelled) return;
         if (!snapshot.error) {
           setPendingPermissions(snapshot.agent?.pendingPermissions ?? []);
+          if (snapshot.agent?.lastUsage) {
+            setLastUsage(snapshot.agent.lastUsage);
+          }
           setTimelineState((prev) => {
             const optimistic = prev.items.filter(
               (i): i is SidechatUserItem => i.kind === "user_message" && Boolean(i.optimistic),
@@ -438,6 +446,8 @@ function SidechatSurface({
       } else if (event.event.type === "permission_resolved") {
         const resolvedId = event.event.requestId;
         setPendingPermissions((prev) => prev.filter((p) => p.id !== resolvedId));
+      } else if (event.event.type === "turn_completed" && event.event.usage) {
+        setLastUsage(event.event.usage);
       }
 
       setTimelineState((prev) => {
@@ -453,6 +463,9 @@ function SidechatSurface({
       if (cancelled) return;
       if (update.kind === "upsert") {
         setPendingPermissions(update.agent.pendingPermissions ?? []);
+        if (update.agent.lastUsage) {
+          setLastUsage(update.agent.lastUsage);
+        }
         const running =
           update.agent.status === "running" || Boolean(update.agent.activeTurn?.turnId);
         setTimelineState((prev) =>
@@ -624,6 +637,7 @@ function SidechatSurface({
             providerModel,
             modeId: effectiveModeId,
             thinkingOptionId: effectiveThinkingId,
+            fastMode: fastModeEnabled,
             attachMainContext: shouldAttachMainContext,
             quotedSelection: quoteToSend,
             deferInitialSend: true,
@@ -706,6 +720,7 @@ function SidechatSurface({
       effectiveModelId,
       effectiveModeId,
       effectiveThinkingId,
+      fastModeEnabled,
       shouldAttachMainContext,
       workspaceId,
       mainAgentId,
@@ -964,6 +979,7 @@ function SidechatSurface({
             { id: "plan", label: t("modePlan") },
             { id: "default", label: t("modeDefault") },
             { id: "acceptEdits", label: t("modeAcceptEdits") },
+            { id: "bypassPermissions", label: "Bypass" },
           ];
     return modes.map((m) => ({
       id: m.id,
@@ -990,6 +1006,17 @@ function SidechatSurface({
     t,
     toast,
   ]);
+
+  const handleToggleFastMode = useCallback(() => {
+    const next = !fastModeEnabled;
+    if (activeSideAgentId && sideComposer) {
+      void sideComposer.setOptions({ fast_mode: next }).catch((err) => {
+        toast.error(err instanceof Error ? err.message : "Fast mode is not available");
+      });
+    } else {
+      patchTabState({ draftFastMode: next });
+    }
+  }, [fastModeEnabled, activeSideAgentId, sideComposer, patchTabState, toast]);
 
   const activeThreadTitle = activeSideAgentId
     ? activeThreadFromList?.title || t("untitledThread")
@@ -1028,17 +1055,13 @@ function SidechatSurface({
     [t],
   );
 
-  const selectedModelLabel =
-    currentModelDef?.label ||
-    (effectiveModelId ? effectiveModelId.replace(/^claude-/, "") : t("modelLabel"));
+  const selectedModelLabel = currentModelDef?.label || effectiveModelId || null;
 
   const selectedThinkingLabel =
-    thinkingOptions.find((o) => o.id === effectiveThinkingId)?.label ||
-    effectiveThinkingId ||
-    t("thinkingDefault");
+    thinkingOptions.find((o) => o.id === effectiveThinkingId)?.label || effectiveThinkingId || null;
 
   const selectedModeLabel =
-    modeMenuOptions.find((m) => m.id === effectiveModeId)?.label || effectiveModeId || t("modeAuto");
+    modeMenuOptions.find((m) => m.id === effectiveModeId)?.label || effectiveModeId || null;
 
   return (
     <View
@@ -1398,453 +1421,61 @@ function SidechatSurface({
         onRespond={handleRespondPermission}
       />
 
-      {/* Composer Box */}
-      <View
-        style={{
-          paddingHorizontal: 10,
-          paddingBottom: 10,
-          paddingTop: 6,
-          borderTopWidth: 1,
-          borderTopColor: colors.border,
-          backgroundColor: colors.surface0,
-          gap: 6,
-          zIndex: 20,
+      {/* Paseo-aligned Bottom Composer Card */}
+      <SidechatComposerBar
+        theme={theme}
+        palette={palette}
+        appearance={appearance}
+        panelWidth={panelWidth}
+        isTouch={layout.compact}
+        t={t}
+        draft={tabState.draft}
+        onChangeDraft={(text) => patchTabState({ draft: text })}
+        onSubmit={() => {
+          if (latestTabStateRef.current.draft.trim()) {
+            void sendPromptText(latestTabStateRef.current.draft);
+          }
         }}
-      >
-        {/* Context & Selection Chips Bar */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: 6,
-          }}
-        >
-          {mainAgentId ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
-              <Pressable
-                accessibilityRole="checkbox"
-                accessibilityLabel={
-                  shouldAttachMainContext ? t("mainContextAttached") : t("mainContextOff")
-                }
-                accessibilityState={{ checked: shouldAttachMainContext }}
-                onPress={() => {
-                  patchTabState({ contextOverride: !shouldAttachMainContext });
-                }}
-                style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                  {
-                    minHeight: compact ? 30 : 23,
-                    paddingHorizontal: 7,
-                    borderRadius: 5,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 4,
-                    backgroundColor: shouldAttachMainContext
-                      ? palette.accentSoftBg
-                      : pressed || hovered
-                        ? colors.surface2
-                        : colors.surface1,
-                    borderWidth: 1,
-                    borderColor: shouldAttachMainContext
-                      ? palette.accentSoftBorder
-                      : colors.border,
-                  },
-                  pointerCursorStyle,
-                ]}
-              >
-                <Icon
-                  name="Link2"
-                  size={11}
-                  color={shouldAttachMainContext ? colors.accent : colors.foregroundMuted}
-                />
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                    fontWeight: shouldAttachMainContext ? "600" : "400",
-                    color: shouldAttachMainContext ? colors.foreground : colors.foregroundMuted,
-                  }}
-                >
-                  {tabState.contextOverride === null &&
-                  prefs.defaultContextMode === "first_turn" &&
-                  isFirstTurn
-                    ? t("mainContextAuto")
-                    : shouldAttachMainContext
-                      ? t("mainContextAttached")
-                      : t("mainContextOff")}
-                </Text>
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("previewMainContext")}
-                onPress={() => setContextPreviewOpen(true)}
-                style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                  {
-                    width: compact ? 30 : 23,
-                    height: compact ? 30 : 23,
-                    borderRadius: 5,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                  },
-                  pointerCursorStyle,
-                ]}
-              >
-                <Icon name="Eye" size={12} color={colors.foregroundMuted} />
-              </Pressable>
-            </View>
-          ) : null}
-
-          {candidateSelection && !attachedQuote ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("quoteSelectionChip")}
-              onPress={() => {
-                setAttachedQuote(candidateSelection);
-                setCandidateSelection(null);
-              }}
-              style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                {
-                  minHeight: compact ? 30 : 23,
-                  paddingHorizontal: 7,
-                  borderRadius: 5,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 4,
-                  backgroundColor: pressed || hovered ? colors.surface2 : colors.surface1,
-                  borderWidth: 1,
-                  borderColor: colors.border,
-                },
-                pointerCursorStyle,
-              ]}
-            >
-              <Icon name="Quote" size={11} color={colors.accent} />
-              <Text
-                numberOfLines={1}
-                style={{
-                  fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                  color: colors.foreground,
-                }}
-              >
-                {t("quoteSelectionChip")}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-
-        {/* Active Attached Quote Preview */}
-        {attachedQuote ? (
-          <View
-            {...codeScopeProps}
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-start",
-              gap: 6,
-              paddingHorizontal: 8,
-              paddingVertical: 6,
-              borderRadius: 6,
-              backgroundColor: colors.surface1,
-              borderLeftWidth: 2,
-              borderLeftColor: colors.accent,
-            }}
-          >
-            <Text
-              numberOfLines={3}
-              style={{
-                flex: 1,
-                fontFamily: appearance.monoFontFamily,
-                fontSize: Math.max(11, appearance.codeFontSize - 1),
-                lineHeight: appearance.codeLineHeight,
-                color: colors.foregroundMuted,
-              }}
-            >
-              {attachedQuote}
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("clearQuote")}
-              onPress={() => setAttachedQuote(null)}
-              style={[{ padding: 2 }, pointerCursorStyle]}
-            >
-              <Icon name="X" size={13} color={colors.foregroundMuted} />
-            </Pressable>
-          </View>
-        ) : null}
-
-        {/* Input Surface */}
-        <View
-          style={{
-            borderRadius: 9,
-            borderWidth: 1,
-            borderColor: colors.border,
-            backgroundColor: colors.surface1,
-            paddingHorizontal: 10,
-            paddingTop: 8,
-            paddingBottom: 6,
-            gap: 6,
-          }}
-        >
-          <TextInput
-            multiline
-            value={tabState.draft}
-            onChangeText={(text) => patchTabState({ draft: text })}
-            placeholder={t("composerPlaceholder", { shortcut: shortcutLabel })}
-            placeholderTextColor={colors.foregroundMuted}
-            accessibilityLabel={t("composerPlaceholder", { shortcut: shortcutLabel })}
-            {...composerWebKeyProps(appearance.sendShortcut, () => {
-              if (latestTabStateRef.current.draft.trim()) {
-                void sendPromptText(latestTabStateRef.current.draft);
-              }
-            })}
-            style={[
-              {
-                minHeight: compact ? 46 : 38,
-                maxHeight: 150,
-                padding: 0,
-                fontSize: appearance.contentFontSize,
-                lineHeight: appearance.contentLineHeight,
-                color: colors.foreground,
-              },
-              noOutlineInputStyle,
-            ]}
-          />
-
-          {/* Bottom Composer Controls: Model, Thinking Effort, Mode, Send/Stop */}
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              flexWrap: "wrap",
-              gap: 6,
-            }}
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                flexWrap: "wrap",
-                gap: 4,
-                flex: 1,
-                minWidth: 0,
-              }}
-            >
-              {/* Model Picker */}
-              {modelMenuOptions.length > 0 ? (
-                <PopoverMenu
-                  title={t("modelLabel")}
-                  open={modelMenuOpen}
-                  onOpenChange={setModelMenuOpen}
-                  placement="top"
-                  theme={theme}
-                  compact={compact}
-                  uiFontSize={appearance.uiBaseFontSize}
-                  options={modelMenuOptions}
-                  trigger={
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${t("modelLabel")}: ${selectedModelLabel}`}
-                      onPress={() => setModelMenuOpen((v) => !v)}
-                      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                        {
-                          minHeight: compact ? 30 : 24,
-                          maxWidth: 150,
-                          paddingHorizontal: 6,
-                          borderRadius: 5,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 4,
-                          backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                        },
-                        pointerCursorStyle,
-                      ]}
-                    >
-                      <Icon name="Cpu" size={12} color={colors.foregroundMuted} />
-                      <Text
-                        numberOfLines={1}
-                        style={{
-                          flexShrink: 1,
-                          fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                          color: colors.foregroundMuted,
-                        }}
-                      >
-                        {selectedModelLabel}
-                      </Text>
-                    </Pressable>
-                  }
-                />
-              ) : null}
-
-              {/* Thinking Effort Picker */}
-              {thinkingMenuOptions.length > 0 ? (
-                <PopoverMenu
-                  title={t("thinkingLabel")}
-                  open={thinkingMenuOpen}
-                  onOpenChange={setThinkingMenuOpen}
-                  placement="top"
-                  theme={theme}
-                  compact={compact}
-                  uiFontSize={appearance.uiBaseFontSize}
-                  options={thinkingMenuOptions}
-                  trigger={
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${t("thinkingLabel")}: ${selectedThinkingLabel}`}
-                      onPress={() => setThinkingMenuOpen((v) => !v)}
-                      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                        {
-                          minHeight: compact ? 30 : 24,
-                          paddingHorizontal: 6,
-                          borderRadius: 5,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 4,
-                          backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                        },
-                        pointerCursorStyle,
-                      ]}
-                    >
-                      <Icon name="Brain" size={12} color={colors.foregroundMuted} />
-                      <Text
-                        numberOfLines={1}
-                        style={{
-                          fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                          color: colors.foregroundMuted,
-                        }}
-                      >
-                        {selectedThinkingLabel}
-                      </Text>
-                    </Pressable>
-                  }
-                />
-              ) : null}
-
-              {/* Permission Mode Picker */}
-              <PopoverMenu
-                title={t("modeLabel")}
-                open={modeMenuOpen}
-                onOpenChange={setModeMenuOpen}
-                placement="top"
-                theme={theme}
-                compact={compact}
-                uiFontSize={appearance.uiBaseFontSize}
-                options={modeMenuOptions}
-                trigger={
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${t("modeLabel")}: ${selectedModeLabel}`}
-                    onPress={() => setModeMenuOpen((v) => !v)}
-                    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                      {
-                        minHeight: compact ? 30 : 24,
-                        paddingHorizontal: 6,
-                        borderRadius: 5,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 4,
-                        backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                      },
-                      pointerCursorStyle,
-                    ]}
-                  >
-                    <Icon
-                      name={effectiveModeId === "plan" ? "ShieldEllipsis" : "ShieldCheck"}
-                      size={12}
-                      color={colors.foregroundMuted}
-                    />
-                    <Text
-                      numberOfLines={1}
-                      style={{
-                        fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
-                        color: colors.foregroundMuted,
-                      }}
-                    >
-                      {selectedModeLabel}
-                    </Text>
-                  </Pressable>
-                }
-              />
-            </View>
-
-            {/* Stop / Send Action */}
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              {isBusy && !tabState.draft.trim() ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("stopButton")}
-                  onPress={() => {
-                    void handleStopTurn();
-                  }}
-                  style={({ pressed }) => [
-                    {
-                      height: compact ? 34 : 26,
-                      paddingHorizontal: 10,
-                      borderRadius: 6,
-                      backgroundColor: colors.surface2,
-                      borderWidth: 1,
-                      borderColor: colors.border,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 5,
-                      opacity: pressed ? 0.8 : 1,
-                    },
-                    pointerCursorStyle,
-                  ]}
-                >
-                  <Icon name="Square" size={11} color={colors.foreground} />
-                  <Text
-                    style={{
-                      fontSize: Math.max(11, appearance.uiBaseFontSize - 1),
-                      fontWeight: "600",
-                      color: colors.foreground,
-                    }}
-                  >
-                    {t("stopButton")}
-                  </Text>
-                </Pressable>
-              ) : (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("sendButton")}
-                  accessibilityState={{
-                    disabled: !tabState.draft.trim() || !effectiveCwd || creatingThread,
-                  }}
-                  disabled={!tabState.draft.trim() || !effectiveCwd || creatingThread}
-                  onPress={() => {
-                    void sendPromptText(tabState.draft);
-                  }}
-                  style={({ pressed }) => {
-                    const enabled = Boolean(tabState.draft.trim() && effectiveCwd && !creatingThread);
-                    return [
-                      {
-                        width: compact ? 34 : 26,
-                        height: compact ? 34 : 26,
-                        borderRadius: 6,
-                        backgroundColor: enabled ? colors.accent : colors.surface2,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        opacity: !enabled ? 0.45 : pressed ? 0.85 : 1,
-                      },
-                      enabled ? pointerCursorStyle : undefined,
-                    ];
-                  }}
-                >
-                  <Icon
-                    name="ArrowUp"
-                    size={14}
-                    color={
-                      tabState.draft.trim() && effectiveCwd
-                        ? colors.accentForeground
-                        : colors.foregroundMuted
-                    }
-                  />
-                </Pressable>
-              )}
-            </View>
-          </View>
-        </View>
-      </View>
+        onStop={() => {
+          void handleStopTurn();
+        }}
+        isBusy={isBusy}
+        canSubmit={Boolean(tabState.draft.trim() && effectiveCwd && !creatingThread)}
+        shortcutLabel={shortcutLabel}
+        hasMainAgent={Boolean(mainAgentId)}
+        shouldAttachMainContext={shouldAttachMainContext}
+        isAutoFirstTurnContext={
+          tabState.contextOverride === null &&
+          prefs.defaultContextMode === "first_turn" &&
+          isFirstTurn
+        }
+        onToggleMainContext={() => {
+          patchTabState({ contextOverride: !shouldAttachMainContext });
+        }}
+        onPreviewMainContext={() => setContextPreviewOpen(true)}
+        candidateSelection={candidateSelection}
+        attachedQuote={attachedQuote}
+        onAttachCandidateSelection={() => {
+          if (candidateSelection) {
+            setAttachedQuote(candidateSelection);
+            setCandidateSelection(null);
+          }
+        }}
+        onClearQuote={() => setAttachedQuote(null)}
+        effectiveProvider={effectiveProvider}
+        selectedModelRawLabel={selectedModelLabel}
+        modelMaxTokens={currentModelDef?.contextWindowMaxTokens ?? null}
+        modelMenuOptions={modelMenuOptions}
+        selectedThinkingRawLabel={selectedThinkingLabel}
+        thinkingMenuOptions={thinkingMenuOptions}
+        effectiveModeId={effectiveModeId}
+        selectedModeRawLabel={selectedModeLabel}
+        modeMenuOptions={modeMenuOptions}
+        fastModeEnabled={fastModeEnabled}
+        showFastModeToggle={effectiveProvider === "claude"}
+        onToggleFastMode={handleToggleFastMode}
+        lastUsage={lastUsage}
+      />
 
       {/* Main Session Context Preview Modal */}
       <Modal

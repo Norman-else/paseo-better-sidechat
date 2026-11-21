@@ -111,6 +111,8 @@ function resolveModeId(input: {
         return "plan";
       case "default":
         return "default";
+      case "bypassPermissions":
+        return "bypassPermissions";
       case "inherit":
         return input.parentProvider === "claude" && input.parentModeId ? input.parentModeId : "auto";
       case "auto":
@@ -293,41 +295,60 @@ export default function contribute(server: PluginServerContext) {
     const title = deriveThreadTitle(input.prompt, "Sidechat");
     const now = new Date().toISOString();
 
-    const handle = await paseo.agents.create({
-      cwd: effectiveCwd,
-      background: true,
-      ...(input.parentAgentId ? { parent: input.parentAgentId } : {}),
-      title,
-      labels: {
-        "paseo-better-sidechat": "1",
-        "paseo-better-sidechat.workspaceId": input.workspaceId,
-        ...(input.parentAgentId ? { "paseo-better-sidechat.parentAgentId": input.parentAgentId } : {}),
-      },
-      metadata: {
-        "paseo-better-sidechat": {
-          workspaceId: input.workspaceId,
-          parentAgentId: input.parentAgentId ?? null,
+    const createAgentWithOptions = (includeFastMode: boolean) => {
+      const claudeOptions: Record<string, unknown> = {};
+      if (prefs.fastStartup && provider === "claude") {
+        claudeOptions.extraArgs = { "strict-mcp-config": null };
+      }
+      if (includeFastMode && input.fastMode && provider === "claude") {
+        claudeOptions.fast_mode = true;
+      }
+
+      return paseo.agents.create({
+        cwd: effectiveCwd,
+        background: true,
+        ...(input.parentAgentId ? { parent: input.parentAgentId } : {}),
+        title,
+        labels: {
+          "paseo-better-sidechat": "1",
+          "paseo-better-sidechat.workspaceId": input.workspaceId,
+          ...(input.parentAgentId
+            ? { "paseo-better-sidechat.parentAgentId": input.parentAgentId }
+            : {}),
         },
-      },
-      config: {
-        provider: providerModel,
-        ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
-        ...(resolvedThinkingId ? { thinkingOptionId: resolvedThinkingId } : {}),
-        ...(prefs.fastStartup && provider === "claude"
-          ? {
-              mcpServers: {},
-              options: { extraArgs: { "strict-mcp-config": null } },
-            }
+        metadata: {
+          "paseo-better-sidechat": {
+            workspaceId: input.workspaceId,
+            parentAgentId: input.parentAgentId ?? null,
+          },
+        },
+        config: {
+          provider: providerModel,
+          ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
+          ...(resolvedThinkingId ? { thinkingOptionId: resolvedThinkingId } : {}),
+          ...(prefs.fastStartup && provider === "claude" ? { mcpServers: {} } : {}),
+          ...(Object.keys(claudeOptions).length > 0 ? { options: claudeOptions } : {}),
+          systemPrompt: prefs.readOnlyGuard
+            ? SIDECHAT_READONLY_SYSTEM_PROMPT
+            : SIDECHAT_EDITABLE_SYSTEM_PROMPT,
+        },
+        ...(!input.deferInitialSend ? { prompt: sentPrompt } : {}),
+        ...(!input.deferInitialSend && input.clientMessageId
+          ? { clientMessageId: input.clientMessageId }
           : {}),
-        systemPrompt: prefs.readOnlyGuard
-          ? SIDECHAT_READONLY_SYSTEM_PROMPT
-          : SIDECHAT_EDITABLE_SYSTEM_PROMPT,
-      },
-      ...(!input.deferInitialSend ? { prompt: sentPrompt } : {}),
-      ...(!input.deferInitialSend && input.clientMessageId
-        ? { clientMessageId: input.clientMessageId }
-        : {}),
-    });
+      });
+    };
+
+    let handle: Awaited<ReturnType<typeof createAgentWithOptions>>;
+    try {
+      handle = await createAgentWithOptions(true);
+    } catch (error) {
+      if (input.fastMode && provider === "claude") {
+        handle = await createAgentWithOptions(false);
+      } else {
+        throw error;
+      }
+    }
 
     const snapshot = handle.current();
     const thread: SidechatThread = {

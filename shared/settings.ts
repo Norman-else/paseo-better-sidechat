@@ -4,7 +4,13 @@ import { z } from "zod";
 export const contextModeSchema = z.enum(["first_turn", "always", "manual"]);
 export type ContextMode = z.infer<typeof contextModeSchema>;
 
-export const defaultClaudeModeSchema = z.enum(["auto", "plan", "default", "inherit"]);
+export const defaultClaudeModeSchema = z.enum([
+  "auto",
+  "plan",
+  "default",
+  "bypassPermissions",
+  "inherit",
+]);
 export type DefaultClaudeMode = z.infer<typeof defaultClaudeModeSchema>;
 
 export const sidechatSettingsSchema = z.object({

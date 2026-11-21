@@ -65,6 +65,7 @@ export const createThreadRpc = defineRpc({
     providerModel: z.string().optional(),
     modeId: z.string().nullable().optional(),
     thinkingOptionId: z.string().nullable().optional(),
+    fastMode: z.boolean().optional(),
     attachMainContext: z.boolean().default(false),
     quotedSelection: z.string().nullable().optional(),
     deferInitialSend: z.boolean().default(false),
