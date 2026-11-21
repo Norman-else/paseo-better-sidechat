@@ -113,6 +113,16 @@ export const en = {
   modeAcceptEdits: "Accept Edits",
   enterShortcut: "Enter",
   modEnterShortcut: "⌘/Ctrl+Enter",
+  contextWindowTitle: "Context window",
+  contextWindowUsed: "{{percentage}}% used",
+  contextWindowTokens: "{{used}} / {{max}} tokens",
+  contextWindowSessionCost: "Session cost {{cost}}",
+  contextWindowNoData: "No context data",
+  usageLeft: "{{percentage}}% left",
+  usageUsed: "{{percentage}}% used",
+  usageResetsIn: "resets in {{countdown}}",
+  usageLoading: "Loading usage…",
+  usageRefresh: "Refresh usage",
 
   // Settings Screen
   settingsHostSyncSection: "Synced Paseo Host Settings",
@@ -276,6 +286,16 @@ export const zh: LocaleTable = {
   modeAcceptEdits: "允许编辑",
   enterShortcut: "Enter",
   modEnterShortcut: "⌘/Ctrl+Enter",
+  contextWindowTitle: "上下文窗口",
+  contextWindowUsed: "已使用 {{percentage}}%",
+  contextWindowTokens: "{{used}} / {{max}} tokens",
+  contextWindowSessionCost: "会话费用 {{cost}}",
+  contextWindowNoData: "暂无上下文数据",
+  usageLeft: "剩余 {{percentage}}%",
+  usageUsed: "已使用 {{percentage}}%",
+  usageResetsIn: "{{countdown}}后重置",
+  usageLoading: "正在加载用量…",
+  usageRefresh: "刷新用量",
 
   // Settings Screen
   settingsHostSyncSection: "已自动同步的 Paseo 设置",

@@ -1663,6 +1663,9 @@ function SidechatSurface({
 
       {/* Paseo-aligned Bottom Composer Card */}
       <SidechatComposerBar
+        hostId={host.id}
+        activeSideAgentId={activeSideAgentId}
+        locale={locale}
         theme={theme}
         palette={palette}
         appearance={appearance}

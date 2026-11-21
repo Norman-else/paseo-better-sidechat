@@ -1,14 +1,19 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { execCommand, type PluginServerContext } from "@getpaseo/plugin/server";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
-import { resolveEffectiveProviderMode } from "./shared/composer-controls";
+import { resolveEffectiveProviderMode, resolveProviderIconSvg } from "./shared/composer-controls";
 import {
   createThreadRpc,
   listThreadsRpc,
   mainContextRpc,
   preferencesRpc,
   updateThreadRpc,
+  usageReportsRpc,
   type SidechatThread,
+  type UsageReportCardData,
 } from "./shared/contracts";
 import {
   buildMainContextDigest,
@@ -136,9 +141,162 @@ async function resolveProviderAndModel(input: {
   throw new Error("No available AI model provider found on this Paseo host.");
 }
 
+function resolvePaseoCliBin(): string {
+  const candidates = [
+    join(homedir(), ".local", "bin", "paseo"),
+    "/Applications/Paseo.app/Contents/Resources/bin/paseo",
+    "/usr/local/bin/paseo",
+  ];
+  for (const bin of candidates) {
+    if (existsSync(bin)) return bin;
+  }
+  return "paseo";
+}
+
+function normalizeRawUsageEntries(rawList: unknown[]): UsageReportCardData[] {
+  const cards: UsageReportCardData[] = [];
+  for (const entry of rawList) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Record<string, unknown>;
+    const sourceId = typeof item.sourceId === "string" ? item.sourceId : "";
+    if (!sourceId) continue;
+    const sourceLabel =
+      typeof item.sourceLabel === "string" && item.sourceLabel
+        ? item.sourceLabel
+        : sourceId;
+    const rawIcon = typeof item.icon === "string" ? item.icon.trim() : null;
+    const iconSvg = resolveProviderIconSvg(sourceId, rawIcon);
+    const accountObj =
+      item.account && typeof item.account === "object"
+        ? (item.account as Record<string, unknown>)
+        : null;
+    const accountLabel =
+      accountObj && typeof accountObj.label === "string" && accountObj.label.trim()
+        ? accountObj.label.trim()
+        : null;
+    const reportObj =
+      item.report && typeof item.report === "object"
+        ? (item.report as Record<string, unknown>)
+        : {};
+    const status =
+      reportObj.status === "available" || reportObj.status === "error"
+        ? reportObj.status
+        : "unavailable";
+    const planLabel =
+      typeof reportObj.planLabel === "string" && reportObj.planLabel.trim()
+        ? reportObj.planLabel.trim()
+        : null;
+
+    const windows = Array.isArray(reportObj.windows)
+      ? reportObj.windows
+          .filter((w): w is Record<string, unknown> => Boolean(w && typeof w === "object"))
+          .map((w) => ({
+            id: String(w.id ?? ""),
+            label: String(w.label ?? w.id ?? ""),
+            shortLabel: typeof w.shortLabel === "string" ? w.shortLabel : undefined,
+            usedPct: typeof w.usedPct === "number" ? w.usedPct : null,
+            remainingPct: typeof w.remainingPct === "number" ? w.remainingPct : null,
+            resetsAt: typeof w.resetsAt === "string" ? w.resetsAt : null,
+            runsOutAt: typeof w.runsOutAt === "string" ? w.runsOutAt : null,
+            tone:
+              w.tone === "ok" ||
+              w.tone === "warning" ||
+              w.tone === "danger" ||
+              w.tone === "default"
+                ? (w.tone as "ok" | "warning" | "danger" | "default")
+                : undefined,
+          }))
+      : [];
+
+    const balances = Array.isArray(reportObj.balances)
+      ? reportObj.balances
+          .filter((b): b is Record<string, unknown> => Boolean(b && typeof b === "object"))
+          .map((b) => ({
+            id: String(b.id ?? ""),
+            label: String(b.label ?? b.id ?? ""),
+            used: typeof b.used === "number" ? b.used : null,
+            remaining: typeof b.remaining === "number" ? b.remaining : null,
+            limit: typeof b.limit === "number" ? b.limit : null,
+            unit: (
+              b.unit === "usd" ||
+              b.unit === "credits" ||
+              b.unit === "requests" ||
+              b.unit === "tokens"
+                ? b.unit
+                : "credits"
+            ) as "tokens" | "usd" | "credits" | "requests",
+            resetsAt: typeof b.resetsAt === "string" ? b.resetsAt : null,
+            tone:
+              b.tone === "ok" ||
+              b.tone === "warning" ||
+              b.tone === "danger" ||
+              b.tone === "default"
+                ? (b.tone as "ok" | "warning" | "danger" | "default")
+                : undefined,
+          }))
+      : [];
+
+    const details = Array.isArray(reportObj.details)
+      ? reportObj.details
+          .filter((d): d is Record<string, unknown> => Boolean(d && typeof d === "object"))
+          .map((d) => ({
+            id: String(d.id ?? d.label ?? ""),
+            label: String(d.label ?? ""),
+            value: String(d.value ?? ""),
+            tone:
+              d.tone === "ok" ||
+              d.tone === "warning" ||
+              d.tone === "danger" ||
+              d.tone === "default"
+                ? (d.tone as "ok" | "warning" | "danger" | "default")
+                : undefined,
+          }))
+      : [];
+
+    let errorMessage: string | null = null;
+    if (status === "error" && typeof reportObj.error === "string") {
+      errorMessage = reportObj.error;
+    } else if (
+      status === "unavailable" &&
+      reportObj.problem &&
+      typeof reportObj.problem === "object"
+    ) {
+      const prob = reportObj.problem as Record<string, unknown>;
+      if (prob.kind === "expired") {
+        errorMessage = "Session login expired";
+      } else if (prob.kind === "no_quota" && typeof prob.detail === "string") {
+        errorMessage = prob.detail;
+      }
+    }
+
+    cards.push({
+      id: typeof item.id === "string" ? item.id : sourceId,
+      sourceId,
+      sourceLabel,
+      iconSvg,
+      accountLabel,
+      status,
+      planLabel,
+      windows,
+      balances,
+      details,
+      errorMessage,
+      fetchedAt:
+        typeof item.successfulAt === "string"
+          ? item.successfulAt
+          : typeof item.fetchedAt === "string"
+            ? item.fetchedAt
+            : null,
+    });
+  }
+  return cards;
+}
+
 export default function contribute(server: PluginServerContext) {
   const settingsHandle = server.registerSettings(sidechatSettings);
   const store = new SidechatThreadStore();
+  let cachedUsageAtMs = 0;
+  let cachedUsageCards: UsageReportCardData[] | null = null;
 
   const readSettings = async (): Promise<SidechatSettingsValues> => {
     try {
@@ -451,6 +609,95 @@ export default function contribute(server: PluginServerContext) {
       return { ok: true };
     }
     return { ok: false };
+  });
+
+  server.handle(usageReportsRpc, async ({ provider, agentId, forceRefresh }, { paseo }) => {
+    const matchesProvider = (card: UsageReportCardData) => {
+      const src = card.sourceId.toLowerCase();
+      const target = provider.toLowerCase();
+      return src === target || target.startsWith(`${src}-`) || src.startsWith(`${target}-`);
+    };
+
+    const bin = resolvePaseoCliBin();
+
+    // 1. If tied to a live agent, try agent-scoped usage first when refreshing or available.
+    if (agentId) {
+      try {
+        const args = ["usage", "--agent", agentId, "--json", ...(forceRefresh ? ["--refresh"] : [])];
+        const res = await execCommand(bin, args, { timeout: 12_000 });
+        const parsed = JSON.parse(res.stdout);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return { reports: normalizeRawUsageEntries(parsed) };
+        }
+      } catch {
+        // Fall back to host-level usage reports filtered by provider.
+      }
+    }
+
+    // 2. Host-level usage reports (with 45s cache unless `forceRefresh: true`).
+    if (!forceRefresh && cachedUsageCards && Date.now() - cachedUsageAtMs < 45_000) {
+      return { reports: cachedUsageCards.filter(matchesProvider) };
+    }
+
+    try {
+      const args = ["usage", "--json", ...(forceRefresh ? ["--refresh"] : [])];
+      const res = await execCommand(bin, args, { timeout: 15_000 });
+      const parsed = JSON.parse(res.stdout);
+      if (Array.isArray(parsed)) {
+        const normalized = normalizeRawUsageEntries(parsed);
+        cachedUsageCards = normalized;
+        cachedUsageAtMs = Date.now();
+        return { reports: normalized.filter(matchesProvider) };
+      }
+    } catch {
+      // Fall back to `paseo.providers.listUsage()` below.
+    }
+
+    try {
+      const legacy = await paseo.providers.listUsage();
+      const converted: UsageReportCardData[] = (legacy.providers ?? []).map((p) => ({
+        id: p.providerId,
+        sourceId: p.providerId,
+        sourceLabel: p.displayName,
+        iconSvg: resolveProviderIconSvg(p.providerId),
+        accountLabel: null,
+        status: p.status,
+        planLabel: p.planLabel ?? null,
+        windows: (p.windows ?? []).map((w) => ({
+          id: w.id,
+          label: w.label,
+          shortLabel: w.shortLabel,
+          usedPct: w.usedPct ?? null,
+          remainingPct: w.remainingPct ?? null,
+          resetsAt: w.resetsAt ?? null,
+          runsOutAt: w.runsOutAt ?? null,
+          tone: w.tone,
+        })),
+        balances: (p.balances ?? []).map((b) => ({
+          id: b.id,
+          label: b.label,
+          used: b.used ?? null,
+          remaining: b.remaining ?? null,
+          limit: b.limit ?? null,
+          unit: b.unit,
+          resetsAt: b.resetsAt ?? null,
+          tone: b.tone,
+        })),
+        details: (p.details ?? []).map((d) => ({
+          id: d.id,
+          label: d.label,
+          value: d.value,
+          tone: d.tone,
+        })),
+        errorMessage: p.error ?? null,
+        fetchedAt: p.fetchedAt ?? legacy.fetchedAt ?? null,
+      }));
+      cachedUsageCards = converted;
+      cachedUsageAtMs = Date.now();
+      return { reports: converted.filter(matchesProvider) };
+    } catch {
+      return { reports: [] };
+    }
   });
 
   server.addHook("workspace.archive.after", async ({ workspace }, { paseo }) => {

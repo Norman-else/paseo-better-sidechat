@@ -102,3 +102,63 @@ export const mainContextRpc = defineRpc({
     error: z.string().optional(),
   }),
 });
+
+export const usageWindowToneSchema = z.enum(["default", "warning", "danger", "ok"]);
+
+export const usageReportWindowSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  shortLabel: z.string().optional(),
+  usedPct: z.number().nullable().optional(),
+  remainingPct: z.number().nullable().optional(),
+  resetsAt: z.string().nullable().optional(),
+  runsOutAt: z.string().nullable().optional(),
+  tone: usageWindowToneSchema.optional(),
+});
+
+export const usageReportBalanceSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  used: z.number().nullable().optional(),
+  remaining: z.number().nullable().optional(),
+  limit: z.number().nullable().optional(),
+  unit: z.enum(["tokens", "usd", "credits", "requests"]),
+  resetsAt: z.string().nullable().optional(),
+  tone: usageWindowToneSchema.optional(),
+});
+
+export const usageReportDetailSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  value: z.string(),
+  tone: usageWindowToneSchema.optional(),
+});
+
+export const usageReportCardSchema = z.object({
+  id: z.string(),
+  sourceId: z.string(),
+  sourceLabel: z.string(),
+  iconSvg: z.string().nullable().optional(),
+  accountLabel: z.string().nullable().optional(),
+  status: z.enum(["available", "unavailable", "error"]),
+  planLabel: z.string().nullable().optional(),
+  windows: z.array(usageReportWindowSchema).default([]),
+  balances: z.array(usageReportBalanceSchema).default([]),
+  details: z.array(usageReportDetailSchema).default([]),
+  errorMessage: z.string().nullable().optional(),
+  fetchedAt: z.string().nullable().optional(),
+});
+
+export type UsageReportCardData = z.infer<typeof usageReportCardSchema>;
+
+export const usageReportsRpc = defineRpc({
+  name: "sidechat.usage.reports",
+  input: z.object({
+    provider: z.string().min(1),
+    agentId: z.string().nullable().optional(),
+    forceRefresh: z.boolean().default(false),
+  }),
+  output: z.object({
+    reports: z.array(usageReportCardSchema),
+  }),
+});

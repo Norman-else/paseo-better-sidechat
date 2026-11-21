@@ -372,6 +372,119 @@ function formatCompactTokens(tokens: number): string {
   return String(tokens);
 }
 
+/**
+ * Matches Paseo's `ContextWindowDetails` `formatTokenCount` (`75000 -> "75k"`, `1000000 -> "1m"`).
+ */
+export function formatPaseoTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}m`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(Math.round(tokens));
+}
+
+export function formatSessionCostUsd(costUsd: number | null | undefined): string | null {
+  if (typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd <= 0) {
+    return null;
+  }
+  return costUsd < 0.01 ? `$${costUsd.toFixed(4)}` : `$${costUsd.toFixed(2)}`;
+}
+
+export function resolveUsageWindowMetrics(
+  window: {
+    usedPct?: number | null;
+    remainingPct?: number | null;
+    tone?: "default" | "warning" | "danger" | "ok";
+  },
+  displayAs: "used" | "remaining",
+): {
+  barPercent: number;
+  displayPercent: number | null;
+  severity: "ok" | "warning" | "danger";
+} {
+  const used =
+    typeof window.usedPct === "number"
+      ? window.usedPct
+      : typeof window.remainingPct === "number"
+        ? 100 - window.remainingPct
+        : null;
+  const remaining =
+    typeof window.remainingPct === "number"
+      ? window.remainingPct
+      : used !== null
+        ? Math.max(0, 100 - used)
+        : null;
+
+  const displayPercent =
+    displayAs === "remaining"
+      ? remaining !== null
+        ? Math.round(Math.max(0, Math.min(100, remaining)))
+        : null
+      : used !== null
+        ? Math.round(Math.max(0, Math.min(100, used)))
+        : null;
+
+  const barPercent = displayPercent ?? 0;
+
+  let severity: "ok" | "warning" | "danger" = "ok";
+  if (window.tone === "danger" || (used !== null && used > 90)) {
+    severity = "danger";
+  } else if (window.tone === "warning" || (used !== null && used >= 70)) {
+    severity = "warning";
+  }
+
+  return { barPercent, displayPercent, severity };
+}
+
+export function formatUsageResetCountdown(
+  resetsAt: string | null | undefined,
+  nowMs = Date.now(),
+  locale = "en",
+): { countdown: string; exactTime: string } | null {
+  if (!resetsAt) return null;
+  const targetMs = Date.parse(resetsAt);
+  if (!Number.isFinite(targetMs)) return null;
+  const diffMs = targetMs - nowMs;
+  if (diffMs <= 0) return null;
+
+  const totalMinutes = Math.max(1, Math.floor(diffMs / 60_000));
+  const totalHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalHours / 24);
+  const remHours = totalHours % 24;
+  const remMinutes = totalMinutes % 60;
+
+  let countdown: string;
+  if (days >= 1) {
+    countdown = remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+  } else if (totalHours >= 1) {
+    countdown = remMinutes > 0 ? `${totalHours}h ${remMinutes}m` : `${totalHours}h`;
+  } else {
+    countdown = `${totalMinutes}m`;
+  }
+
+  const targetDate = new Date(targetMs);
+  let exactTime = "";
+  try {
+    if (days >= 1) {
+      const weekday = new Intl.DateTimeFormat(locale, { weekday: "short" }).format(targetDate);
+      const hm = new Intl.DateTimeFormat(locale, {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: false,
+      }).format(targetDate);
+      exactTime = `${weekday} ${hm}`;
+    } else {
+      exactTime = new Intl.DateTimeFormat(locale, {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(targetDate);
+    }
+  } catch {
+    exactTime = targetDate.toTimeString().slice(0, 5);
+  }
+
+  return { countdown, exactTime };
+}
+
 export function formatContextUsageSummary(
   usage: AgentUsage | null | undefined,
   fallbackMaxTokens?: number | null,

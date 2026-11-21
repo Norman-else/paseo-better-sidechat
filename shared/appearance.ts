@@ -6,6 +6,7 @@ export const DEFAULT_WEB_MONO_FONT =
 export type ChatDisplayMode = "full" | "collapseToolCalls" | "collapseTurns";
 export type SendShortcutMode = "enter" | "mod-enter";
 export type SendBehaviorMode = "interrupt" | "steer" | "queue";
+export type UsageDisplayAs = "used" | "remaining";
 
 export interface HostAppearanceSettings {
   monoFontFamily: string;
@@ -19,6 +20,7 @@ export interface HostAppearanceSettings {
   chatOutlineEnabled: boolean;
   sendShortcut: SendShortcutMode;
   sendBehavior: SendBehaviorMode;
+  usageDisplayAs: UsageDisplayAs;
   themePreference: string;
 }
 
@@ -100,6 +102,12 @@ export function parseHostAppearanceSettings(
   const sendShortcut: SendShortcutMode = record.sendShortcut === "mod-enter" ? "mod-enter" : "enter";
   const sendBehavior: SendBehaviorMode =
     record.sendBehavior === "interrupt" || record.sendBehavior === "queue" ? record.sendBehavior : "steer";
+  const usageRecord =
+    record.usage && typeof record.usage === "object"
+      ? (record.usage as Record<string, unknown>)
+      : null;
+  const usageDisplayAs: UsageDisplayAs =
+    usageRecord?.displayAs === "used" ? "used" : "remaining";
   const themePreference =
     typeof record.pluginThemeId === "string" && record.pluginThemeId
       ? record.pluginThemeId
@@ -119,6 +127,7 @@ export function parseHostAppearanceSettings(
     chatOutlineEnabled,
     sendShortcut,
     sendBehavior,
+    usageDisplayAs,
     themePreference,
   };
 }
@@ -134,6 +143,7 @@ export function sameHostAppearance(a: HostAppearanceSettings, b: HostAppearanceS
     a.chatOutlineEnabled === b.chatOutlineEnabled &&
     a.sendShortcut === b.sendShortcut &&
     a.sendBehavior === b.sendBehavior &&
+    a.usageDisplayAs === b.usageDisplayAs &&
     a.themePreference === b.themePreference
   );
 }

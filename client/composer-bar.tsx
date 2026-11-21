@@ -1,5 +1,5 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/ui";
+import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import type {
   AgentOptionControl,
   AgentUsage,
@@ -13,16 +13,14 @@ import {
   mixColor,
 } from "../shared/appearance";
 import {
-  buildContextRingSvg,
-  formatContextUsageSummary,
   formatShortModelLabel,
   formatShortModeLabel,
   formatShortThinkingLabel,
-  resolveContextUsageRatio,
   resolveModeIconName,
   resolveProviderIconSvg,
   resolveToolbarDensity,
 } from "../shared/composer-controls";
+import { ContextWindowPopover } from "./context-window-popover";
 import type { useMessages } from "./messages";
 import { type MenuOption, PopoverMenu } from "./popover-menu";
 import {
@@ -48,6 +46,9 @@ function normalizeLucideIconName(raw: string | undefined, fallback: string): str
 type TranslateFn = ReturnType<typeof useMessages>["t"];
 
 export interface SidechatComposerBarProps {
+  hostId: string;
+  activeSideAgentId: string | null;
+  locale: string;
   theme: PluginTheme;
   palette: DerivedPalette;
   appearance: HostAppearanceSettings;
@@ -93,6 +94,9 @@ export interface SidechatComposerBarProps {
 }
 
 export function SidechatComposerBar({
+  hostId,
+  activeSideAgentId,
+  locale,
   theme,
   palette,
   appearance,
@@ -132,7 +136,6 @@ export function SidechatComposerBar({
   lastUsage,
 }: SidechatComposerBarProps) {
   const { colors } = theme;
-  const toast = useToast();
   const [inputFocused, setInputFocused] = useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -198,27 +201,6 @@ export function SidechatComposerBar({
     onPreviewMainContext,
     onAttachCandidateSelection,
   ]);
-
-  // Context window meter SVG
-  const usageMetrics = useMemo(
-    () => resolveContextUsageRatio(lastUsage, modelMaxTokens),
-    [lastUsage, modelMaxTokens],
-  );
-  const ringProgressColor =
-    usageMetrics.ratio >= 0.9
-      ? colors.statusDanger
-      : usageMetrics.ratio >= 0.75
-        ? colors.statusWarning
-        : colors.foregroundMuted;
-  const contextRingSvg = useMemo(
-    () =>
-      buildContextRingSvg({
-        ratio: usageMetrics.ratio,
-        trackColor: colors.foregroundMuted,
-        progressColor: ringProgressColor,
-      }),
-    [usageMetrics.ratio, colors.foregroundMuted, ringProgressColor],
-  );
 
   const hasTrayItems =
     (hasMainAgent && shouldAttachMainContext) ||
@@ -777,7 +759,7 @@ export function SidechatComposerBar({
             })}
           </View>
 
-          {/* Right Controls: Context Window Meter Ring + Send / Stop Disc */}
+          {/* Right Controls: Context Window Meter Popover + Always-Visible Send / Stop Disc */}
           <View
             style={{
               flexDirection: "row",
@@ -786,35 +768,24 @@ export function SidechatComposerBar({
               flexShrink: 0,
             }}
           >
-            {/* 6. Context Window Progress Ring (`◯`) */}
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={formatContextUsageSummary(lastUsage, modelMaxTokens)}
-              onPress={() => {
-                toast.show(formatContextUsageSummary(lastUsage, modelMaxTokens), {
-                  variant: "info",
-                });
-              }}
-              style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                {
-                  width: discSize,
-                  height: discSize,
-                  borderRadius: 999,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: pressed || hovered ? colors.surface2 : "transparent",
-                },
-                pointerCursorStyle,
-              ]}
-            >
-              <Icon
-                icon={{ svg: contextRingSvg }}
-                size={ringSize}
-                color={ringProgressColor}
-              />
-            </Pressable>
+            {/* 6. Context Window Progress Ring + Paseo Context/Quota Popover */}
+            <ContextWindowPopover
+              hostId={hostId}
+              effectiveProvider={effectiveProvider}
+              activeSideAgentId={activeSideAgentId}
+              lastUsage={lastUsage}
+              modelMaxTokens={modelMaxTokens}
+              theme={theme}
+              appearance={appearance}
+              panelWidth={panelWidth}
+              discSize={discSize}
+              ringSize={ringSize}
+              isTouch={isTouch}
+              locale={locale}
+              t={t}
+            />
 
-            {/* 7. Circular Stop / Send Disc */}
+            {/* 7. Circular Stop / Always-Visible Send Disc */}
             {isBusy && !hasDraft ? (
               <Pressable
                 accessibilityRole="button"
@@ -835,7 +806,7 @@ export function SidechatComposerBar({
               >
                 <Icon name="Square" size={isTouch ? 13 : 11} color="#ffffff" />
               </Pressable>
-            ) : hasDraft || isTouch ? (
+            ) : (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("sendButton")}
@@ -861,7 +832,7 @@ export function SidechatComposerBar({
                   color={canSubmit ? colors.accentForeground : colors.foregroundMuted}
                 />
               </Pressable>
-            ) : null}
+            )}
           </View>
         </View>
       </View>

@@ -7,15 +7,19 @@ import {
   CLAUDE_ICON_SVG,
   CODEX_ICON_SVG,
   formatContextUsageSummary,
+  formatPaseoTokenCount,
   formatProviderLabel,
+  formatSessionCostUsd,
   formatShortModelLabel,
   formatShortModeLabel,
   formatShortThinkingLabel,
+  formatUsageResetCountdown,
   resolveContextUsageRatio,
   resolveEffectiveProviderMode,
   resolveModeIconName,
   resolveProviderIconSvg,
   resolveToolbarDensity,
+  resolveUsageWindowMetrics,
 } from "../shared/composer-controls";
 import { sidechatSettings } from "../shared/settings";
 
@@ -180,4 +184,36 @@ test("resolveContextUsageRatio, formatContextUsageSummary, and resolveToolbarDen
   assert.equal(resolveToolbarDensity(480, false), "full");
   assert.equal(resolveToolbarDensity(390, false), "condensed");
   assert.equal(resolveToolbarDensity(320, false), "iconOnly");
+});
+
+test("Paseo context window popover token, cost, quota bar, and reset countdown formatters match Paseo", () => {
+  assert.equal(formatPaseoTokenCount(75_200), "75k");
+  assert.equal(formatPaseoTokenCount(1_000_000), "1m");
+  assert.equal(formatPaseoTokenCount(850), "850");
+
+  assert.equal(formatSessionCostUsd(1.3), "$1.30");
+  assert.equal(formatSessionCostUsd(0.0042), "$0.0042");
+  assert.equal(formatSessionCostUsd(0), null);
+
+  const rem = resolveUsageWindowMetrics(
+    { usedPct: 14, remainingPct: 86, tone: "ok" },
+    "remaining",
+  );
+  assert.equal(rem.displayPercent, 86);
+  assert.equal(rem.barPercent, 86);
+  assert.equal(rem.severity, "ok");
+
+  const usedWarn = resolveUsageWindowMetrics(
+    { usedPct: 78, remainingPct: 22 },
+    "used",
+  );
+  assert.equal(usedWarn.displayPercent, 78);
+  assert.equal(usedWarn.severity, "warning");
+
+  const nowMs = Date.parse("2026-11-21T03:22:00Z");
+  const shortReset = formatUsageResetCountdown("2026-11-21T05:30:30Z", nowMs, "en");
+  assert.equal(shortReset?.countdown, "2h 8m");
+
+  const multiDayReset = formatUsageResetCountdown("2026-11-26T22:30:00Z", nowMs, "en");
+  assert.equal(multiDayReset?.countdown, "5d 19h");
 });
