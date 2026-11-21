@@ -43,6 +43,12 @@ import {
   View,
 } from "react-native";
 import { z } from "zod";
+import {
+  deriveEffectivePromptLabel,
+  splitSidechatAttachmentsForSubmit,
+  type SidechatComposerAttachment,
+  type SidechatWireAgentAttachment,
+} from "../shared/attachments";
 import { deriveSidechatPalette } from "../shared/appearance";
 import {
   formatProviderLabel,
@@ -507,9 +513,11 @@ function SidechatSurface({
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
   const [toggledItemIds, setToggledItemIds] = useState<Set<string>>(() => new Set());
 
-  // External text selection quote
+  // External text selection quote & Paseo `+` menu attachments
   const [candidateSelection, setCandidateSelection] = useState<string | null>(null);
   const [attachedQuote, setAttachedQuote] = useState<string | null>(null);
+  const [composerAttachments, setComposerAttachments] = useState<SidechatComposerAttachment[]>([]);
+  const [uploadingCount, setUploadingCount] = useState(0);
 
   // Menus & Modals
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
@@ -525,6 +533,8 @@ function SidechatSurface({
     agentId: string;
     sentPrompt: string;
     clientMessageId: string;
+    images: Array<{ data: string; mimeType: string }>;
+    attachments: SidechatWireAgentAttachment[];
   } | null>(null);
 
   useEffect(() => {
@@ -639,6 +649,8 @@ function SidechatSurface({
           if (cancelled) return;
           await handle.send(pendingSend.sentPrompt, {
             messageId: pendingSend.clientMessageId,
+            images: pendingSend.images,
+            attachments: pendingSend.attachments,
           });
           initialSendInFlight = false;
         } catch (error) {
@@ -757,13 +769,25 @@ function SidechatSurface({
   }, []);
 
   const sendPromptText = useCallback(
-    async (rawInputText: string, options?: { forceNewThread?: boolean }) => {
+    async (
+      rawInputText: string,
+      options?: {
+        forceNewThread?: boolean;
+        attachmentsOverride?: readonly SidechatComposerAttachment[];
+      },
+    ) => {
+      const activeAttachments = options?.attachmentsOverride ?? composerAttachments;
       const trimmed = rawInputText.trim();
-      if (!trimmed || !effectiveCwd) return;
+      if ((!trimmed && activeAttachments.length === 0) || !effectiveCwd) return;
+
+      const { images, attachments: wireAttachments } =
+        splitSidechatAttachmentsForSubmit(activeAttachments);
+      const effectiveLabel = deriveEffectivePromptLabel(trimmed, activeAttachments);
 
       const clientMessageId = makeClientMessageId();
       const quoteToSend = attachedQuote;
       setAttachedQuote(null);
+      setComposerAttachments([]);
       stickToBottomRef.current = true;
 
       const targetSideAgentId = options?.forceNewThread ? null : latestTabStateRef.current.sideAgentId;
@@ -775,7 +799,7 @@ function SidechatSurface({
         setTimelineState(
           appendOptimisticUserMessage(createEmptyTimelineState(), {
             text: composeSidechatPrompt({
-              text: trimmed,
+              text: effectiveLabel,
               quotedSelection: quoteToSend,
             }),
             clientMessageId,
@@ -793,6 +817,7 @@ function SidechatSurface({
             parentAgentId: mainAgentId,
             cwd: effectiveCwd,
             prompt: trimmed,
+            titleSeed: effectiveLabel,
             clientMessageId,
             providerModel,
             modeId: effectiveModeId,
@@ -808,11 +833,12 @@ function SidechatSurface({
             agentId: created.thread.agentId,
             sentPrompt: created.sentPrompt,
             clientMessageId,
+            images,
+            attachments: wireAttachments,
           };
-          // Re-align optimistic message with full composed prompt (including main context badge)
           setTimelineState(
             appendOptimisticUserMessage(createEmptyTimelineState(), {
-              text: created.sentPrompt,
+              text: created.sentPrompt.trim() ? created.sentPrompt : effectiveLabel,
               clientMessageId,
             }),
           );
@@ -823,6 +849,7 @@ function SidechatSurface({
           toast.error(error instanceof Error ? error.message : "Failed to start sidechat");
           setTimelineState(createEmptyTimelineState());
           patchTabState({ draft: trimmed });
+          setComposerAttachments([...activeAttachments]);
         } finally {
           setCreatingThread(false);
         }
@@ -855,7 +882,7 @@ function SidechatSurface({
 
       setTimelineState((prev) =>
         appendOptimisticUserMessage(prev, {
-          text: composed,
+          text: composed.trim() ? composed : effectiveLabel,
           clientMessageId,
         }),
       );
@@ -864,6 +891,8 @@ function SidechatSurface({
         await paseo.agents.ref(targetSideAgentId).send(composed, {
           messageId: clientMessageId,
           activeTurnBehavior: appearance.sendBehavior === "interrupt" ? "interrupt" : "steer",
+          images,
+          attachments: wireAttachments,
         });
         void callUpdateThread({
           agentId: targetSideAgentId,
@@ -875,6 +904,7 @@ function SidechatSurface({
       }
     },
     [
+      composerAttachments,
       effectiveCwd,
       attachedQuote,
       effectiveProvider,
@@ -1664,6 +1694,7 @@ function SidechatSurface({
       {/* Paseo-aligned Bottom Composer Card */}
       <SidechatComposerBar
         hostId={host.id}
+        cwd={effectiveCwd}
         activeSideAgentId={activeSideAgentId}
         locale={locale}
         theme={theme}
@@ -1675,7 +1706,7 @@ function SidechatSurface({
         draft={tabState.draft}
         onChangeDraft={(text) => patchTabState({ draft: text })}
         onSubmit={() => {
-          if (latestTabStateRef.current.draft.trim()) {
+          if (latestTabStateRef.current.draft.trim() || composerAttachments.length > 0) {
             void sendPromptText(latestTabStateRef.current.draft);
           }
         }}
@@ -1683,8 +1714,16 @@ function SidechatSurface({
           void handleStopTurn();
         }}
         isBusy={isBusy}
-        canSubmit={Boolean(tabState.draft.trim() && effectiveCwd && !creatingThread)}
+        canSubmit={Boolean(
+          (tabState.draft.trim() || composerAttachments.length > 0) &&
+            effectiveCwd &&
+            !creatingThread &&
+            uploadingCount === 0,
+        )}
         shortcutLabel={shortcutLabel}
+        attachments={composerAttachments}
+        onChangeAttachments={setComposerAttachments}
+        onUploadingCountChange={setUploadingCount}
         hasMainAgent={Boolean(mainAgentId)}
         shouldAttachMainContext={shouldAttachMainContext}
         isAutoFirstTurnContext={

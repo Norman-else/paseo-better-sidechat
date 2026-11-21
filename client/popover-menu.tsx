@@ -18,6 +18,7 @@ export interface MenuOption {
 
 export function PopoverMenu({
   title,
+  sheetTitle,
   open,
   onOpenChange,
   anchor = "left",
@@ -25,12 +26,15 @@ export function PopoverMenu({
   theme,
   compact,
   uiFontSize,
+  iconSize = 15,
+  minWidth = 220,
   trigger,
   headerAction,
   options,
   emptyLabel,
 }: {
-  title: string;
+  title?: string;
+  sheetTitle?: string;
   open: boolean;
   onOpenChange(open: boolean): void;
   anchor?: "left" | "right";
@@ -38,6 +42,8 @@ export function PopoverMenu({
   theme: PluginTheme;
   compact: boolean;
   uiFontSize: number;
+  iconSize?: number;
+  minWidth?: number;
   trigger: ReactNode;
   headerAction?: ReactNode;
   options: readonly MenuOption[];
@@ -131,9 +137,9 @@ export function PopoverMenu({
                 ]}
               >
                 {opt.iconSvg ? (
-                  <Icon icon={{ svg: opt.iconSvg }} size={14} color={iconColor} />
+                  <Icon icon={{ svg: opt.iconSvg }} size={iconSize} color={iconColor} />
                 ) : opt.icon ? (
-                  <Icon name={opt.icon} size={14} color={iconColor} />
+                  <Icon name={opt.icon} size={iconSize} color={iconColor} />
                 ) : null}
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text
@@ -179,50 +185,56 @@ export function PopoverMenu({
               ? { bottom: "100%", marginBottom: 6 }
               : { top: "100%", marginTop: 6 }),
             ...(anchor === "right" ? { right: 0 } : { left: 0 }),
-            minWidth: 230,
+            minWidth,
             maxWidth: 320,
             maxHeight: 340,
             backgroundColor: colors.surface1,
             borderWidth: 1,
             borderColor: colors.border,
-            borderRadius: 8,
+            borderRadius: 10,
             shadowColor: "#000",
-            shadowOpacity: 0.18,
-            shadowRadius: 12,
-            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.22,
+            shadowRadius: 14,
+            shadowOffset: { width: 0, height: 6 },
             overflow: "hidden",
             zIndex: 50,
           }}
         >
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              paddingHorizontal: 10,
-              paddingVertical: 7,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.border,
-            }}
-          >
-            <Text
-              numberOfLines={1}
+          {title || headerAction ? (
+            <View
               style={{
-                fontSize: Math.max(11, uiFontSize - 1),
-                fontWeight: "600",
-                color: colors.foregroundMuted,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingHorizontal: 10,
+                paddingVertical: 7,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border,
               }}
             >
-              {title}
-            </Text>
-            {headerAction}
-          </View>
+              {title ? (
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    fontSize: Math.max(11, uiFontSize - 1),
+                    fontWeight: "600",
+                    color: colors.foregroundMuted,
+                  }}
+                >
+                  {title}
+                </Text>
+              ) : (
+                <View />
+              )}
+              {headerAction}
+            </View>
+          ) : null}
           <ScrollView style={{ maxHeight: 290 }}>{renderRows()}</ScrollView>
         </View>
       ) : null}
 
       {useSheet ? (
-        <Modal title={title} open={open} onOpenChange={onOpenChange}>
+        <Modal title={title ?? sheetTitle ?? ""} open={open} onOpenChange={onOpenChange}>
           <Modal.Content scrollable contentContainerStyle={{ padding: 8, gap: 4 }}>
             {headerAction ? (
               <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}>{headerAction}</View>

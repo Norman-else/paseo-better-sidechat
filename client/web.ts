@@ -42,7 +42,55 @@ declare const window:
     }
   | undefined;
 
-declare const document: { documentElement: object } | undefined;
+declare const document:
+  | {
+      documentElement: object;
+      body?: {
+        appendChild(el: WebFileInputElement): void;
+        removeChild(el: WebFileInputElement): void;
+      };
+      createElement(tag: string): WebFileInputElement;
+    }
+  | undefined;
+
+type WebBlobFile = {
+  name: string;
+  type: string;
+  size: number;
+};
+
+type WebFileList = {
+  length: number;
+  [index: number]: WebBlobFile | undefined;
+};
+
+type WebFileInputElement = {
+  type: string;
+  accept: string;
+  multiple: boolean;
+  style: Record<string, string>;
+  files: WebFileList | null;
+  onchange: (() => void) | null;
+  oncancel?: (() => void) | null;
+  click(): void;
+  remove?(): void;
+};
+
+declare const FileReader:
+  | (new () => {
+      result: string | ArrayBuffer | null;
+      onload: (() => void) | null;
+      onerror: (() => void) | null;
+      readAsDataURL(file: WebBlobFile): void;
+    })
+  | undefined;
+
+export interface PickedWebFile {
+  fileName: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+}
 
 declare const MutationObserver:
   | (new (callback: () => void) => {
@@ -226,6 +274,142 @@ export function composerWebKeyProps(
         syntheticEvent.preventDefault?.();
         onSubmit();
       }
+    },
+  };
+}
+
+function readBlobFileAsBase64(
+  file: WebBlobFile,
+  fallbackMime: string,
+  fallbackName?: string,
+): Promise<PickedWebFile> {
+  return new Promise((resolve, reject) => {
+    if (typeof FileReader === "undefined") {
+      reject(new Error("FileReader is unavailable"));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name || "file"}`));
+    reader.onload = () => {
+      const raw = typeof reader.result === "string" ? reader.result : "";
+      const comma = raw.indexOf(",");
+      const dataBase64 = comma >= 0 ? raw.slice(comma + 1) : raw;
+      resolve({
+        fileName: file.name || fallbackName || "attachment",
+        mimeType: file.type || fallbackMime,
+        size: file.size ?? 0,
+        dataBase64,
+      });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+export function pickWebFiles(options: {
+  accept?: string;
+  multiple?: boolean;
+  fallbackMime?: string;
+}): Promise<PickedWebFile[]> {
+  if (Platform.OS !== "web" || typeof document === "undefined") {
+    return Promise.resolve([]);
+  }
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = options.accept ?? "";
+    input.multiple = options.multiple !== false;
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    input.style.opacity = "0";
+    document.body?.appendChild(input);
+
+    let settled = false;
+    const cleanup = () => {
+      if (input.remove) {
+        input.remove();
+      } else {
+        try {
+          document.body?.removeChild(input);
+        } catch {
+          // Ignore if already detached
+        }
+      }
+    };
+
+    input.oncancel = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve([]);
+    };
+
+    input.onchange = () => {
+      if (settled) return;
+      settled = true;
+      const list = input.files;
+      const selected: WebBlobFile[] = [];
+      if (list) {
+        for (let i = 0; i < list.length; i += 1) {
+          const item = list[i];
+          if (item) selected.push(item);
+        }
+      }
+      cleanup();
+      if (selected.length === 0) {
+        resolve([]);
+        return;
+      }
+      Promise.all(
+        selected.map((f) =>
+          readBlobFileAsBase64(f, options.fallbackMime ?? "application/octet-stream"),
+        ),
+      ).then(resolve, reject);
+    };
+
+    input.click();
+  });
+}
+
+export function composerPasteImageProps(
+  onPasteImages: (files: PickedWebFile[]) => void,
+): Record<string, unknown> {
+  if (Platform.OS !== "web") return {};
+  return {
+    onPaste: (syntheticEvent: {
+      nativeEvent?: {
+        clipboardData?: {
+          items?: {
+            length: number;
+            [index: number]:
+              | { kind?: string; type?: string; getAsFile?: () => WebBlobFile | null }
+              | undefined;
+          };
+        };
+        preventDefault?: () => void;
+      };
+      preventDefault?: () => void;
+    }) => {
+      const items = syntheticEvent.nativeEvent?.clipboardData?.items;
+      if (!items) return;
+      const imageBlobs: WebBlobFile[] = [];
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item?.kind === "file" && item.type?.startsWith("image/")) {
+          const blob = item.getAsFile?.();
+          if (blob) imageBlobs.push(blob);
+        }
+      }
+      if (imageBlobs.length === 0) return;
+      syntheticEvent.nativeEvent?.preventDefault?.();
+      syntheticEvent.preventDefault?.();
+      void Promise.all(
+        imageBlobs.map((blob, idx) =>
+          readBlobFileAsBase64(blob, "image/png", `pasted-image-${idx + 1}.png`).catch(() => null),
+        ),
+      ).then((resolved) => {
+        const valid = resolved.filter((f): f is PickedWebFile => f !== null);
+        if (valid.length > 0) onPasteImages(valid);
+      });
     },
   };
 }

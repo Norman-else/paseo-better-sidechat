@@ -1,5 +1,10 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, PluginAttachmentItemSchema } from "@getpaseo/plugin";
 import { z } from "zod";
+import {
+  discoveredAttachmentSourceSchema,
+  forgeSearchItemSchema,
+  uploadedFileAttachmentSchema,
+} from "./attachments";
 import { sidechatSettingsSchema } from "./settings";
 
 export const preferencesRpc = defineRpc({
@@ -60,7 +65,8 @@ export const createThreadRpc = defineRpc({
     workspaceId: z.string().min(1),
     parentAgentId: z.string().nullable().optional(),
     cwd: z.string().min(1),
-    prompt: z.string().min(1),
+    prompt: z.string(),
+    titleSeed: z.string().optional(),
     clientMessageId: z.string().optional(),
     providerModel: z.string().optional(),
     modeId: z.string().nullable().optional(),
@@ -160,5 +166,65 @@ export const usageReportsRpc = defineRpc({
   }),
   output: z.object({
     reports: z.array(usageReportCardSchema),
+  }),
+});
+
+export const forgeInfoRpc = defineRpc({
+  name: "sidechat.attachments.forge_info",
+  input: z.object({
+    cwd: z.string().min(1),
+  }),
+  output: z.object({
+    forge: z.string(),
+    remoteUrl: z.string().nullable(),
+  }),
+});
+
+export const forgeSearchRpc = defineRpc({
+  name: "sidechat.attachments.forge_search",
+  input: z.object({
+    cwd: z.string().min(1),
+    query: z.string().default(""),
+  }),
+  output: z.object({
+    forge: z.string(),
+    items: z.array(forgeSearchItemSchema),
+    authState: z.string().nullable().optional(),
+    error: z.string().nullable().optional(),
+  }),
+});
+
+export const listAttachmentSourcesRpc = defineRpc({
+  name: "sidechat.attachments.sources",
+  input: z.object({
+    locale: z.string().default("en"),
+  }),
+  output: z.object({
+    sources: z.array(discoveredAttachmentSourceSchema),
+  }),
+});
+
+export const searchAttachmentSourceRpc = defineRpc({
+  name: "sidechat.attachments.source_search",
+  input: z.object({
+    pluginId: z.string().min(1),
+    searchMethod: z.string().min(1),
+    query: z.string().default(""),
+  }),
+  output: z.object({
+    items: z.array(PluginAttachmentItemSchema),
+    error: z.string().nullable().optional(),
+  }),
+});
+
+export const uploadFileRpc = defineRpc({
+  name: "sidechat.attachments.upload_file",
+  input: z.object({
+    fileName: z.string().min(1),
+    mimeType: z.string().min(1),
+    dataBase64: z.string(),
+  }),
+  output: z.object({
+    attachment: uploadedFileAttachmentSchema,
   }),
 });

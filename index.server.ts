@@ -7,10 +7,15 @@ import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import { resolveEffectiveProviderMode, resolveProviderIconSvg } from "./shared/composer-controls";
 import {
   createThreadRpc,
+  forgeInfoRpc,
+  forgeSearchRpc,
+  listAttachmentSourcesRpc,
   listThreadsRpc,
   mainContextRpc,
   preferencesRpc,
+  searchAttachmentSourceRpc,
   updateThreadRpc,
+  uploadFileRpc,
   usageReportsRpc,
   type SidechatThread,
   type UsageReportCardData,
@@ -27,6 +32,7 @@ import {
   sidechatSettings,
   type SidechatSettingsValues,
 } from "./shared/settings";
+import { SidechatAttachmentService } from "./server/attachments";
 import { SidechatThreadStore } from "./server/thread-store";
 
 async function loadProviderEntries(
@@ -295,6 +301,7 @@ function normalizeRawUsageEntries(rawList: unknown[]): UsageReportCardData[] {
 export default function contribute(server: PluginServerContext) {
   const settingsHandle = server.registerSettings(sidechatSettings);
   const store = new SidechatThreadStore();
+  const attachmentService = new SidechatAttachmentService(resolvePaseoCliBin);
   let cachedUsageAtMs = 0;
   let cachedUsageCards: UsageReportCardData[] | null = null;
 
@@ -474,7 +481,7 @@ export default function contribute(server: PluginServerContext) {
       quotedSelection: input.quotedSelection,
     });
 
-    const title = deriveThreadTitle(input.prompt, "Sidechat");
+    const title = deriveThreadTitle(input.prompt || input.titleSeed || "", "Sidechat");
     const now = new Date().toISOString();
 
     const createAgentWithOptions = async (includeUserOptions: boolean) => {
@@ -700,6 +707,24 @@ export default function contribute(server: PluginServerContext) {
     }
   });
 
+  server.handle(forgeInfoRpc, async ({ cwd }) => attachmentService.getForgeInfo(cwd));
+
+  server.handle(forgeSearchRpc, async ({ cwd, query }) =>
+    attachmentService.searchForge({ cwd, query }),
+  );
+
+  server.handle(listAttachmentSourcesRpc, async ({ locale }) => ({
+    sources: await attachmentService.listPluginAttachmentSources(locale),
+  }));
+
+  server.handle(searchAttachmentSourceRpc, async ({ pluginId, searchMethod, query }) =>
+    attachmentService.searchPluginAttachmentSource({ pluginId, searchMethod, query }),
+  );
+
+  server.handle(uploadFileRpc, async ({ fileName, mimeType, dataBase64 }) => ({
+    attachment: await attachmentService.uploadFile({ fileName, mimeType, dataBase64 }),
+  }));
+
   server.addHook("workspace.archive.after", async ({ workspace }, { paseo }) => {
     const archivedIds = await store.archiveWorkspace(workspace.id);
     await Promise.allSettled(
@@ -707,5 +732,5 @@ export default function contribute(server: PluginServerContext) {
     );
   });
 
-  return () => {};
+  return () => attachmentService.close();
 }
