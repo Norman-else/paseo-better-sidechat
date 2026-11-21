@@ -61,6 +61,13 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
   const shortcutLabel =
     appearance.sendShortcut === "mod-enter" ? t("modEnterShortcut") : t("enterShortcut");
 
+  const sendBehaviorText =
+    appearance.sendBehavior === "queue"
+      ? t("sendBehaviorQueue")
+      : appearance.sendBehavior === "interrupt"
+        ? t("sendBehaviorInterrupt")
+        : t("sendBehaviorSteer");
+
   return (
     <ScrollView
       style={[{ flex: 1, backgroundColor: colors.surface0 }, stableScrollbarStyle]}
@@ -126,6 +133,12 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
                 code: appearance.codeFontSize,
                 shortcut: shortcutLabel,
               })}
+            </Text>
+          </SettingsRow>
+
+          <SettingsRow label={t("hostSendBehaviorLabel")}>
+            <Text style={{ fontSize: 13, color: colors.foregroundMuted }}>
+              {sendBehaviorText}
             </Text>
           </SettingsRow>
         </SettingsCard>

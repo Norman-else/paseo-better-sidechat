@@ -13,7 +13,13 @@ import {
   type DerivedPalette,
   type HostAppearanceSettings,
   mixColor,
+  type SendBehaviorMode,
 } from "../shared/appearance";
+import {
+  deriveQueuedMessageLabel,
+  resolveAlternateSendAction,
+  type QueuedSidechatMessage,
+} from "../shared/queue";
 import {
   FILE_UPLOAD_MAX_BYTES,
   formatFileSizeCompact,
@@ -108,10 +114,15 @@ export interface SidechatComposerBarProps {
   draft: string;
   onChangeDraft(text: string): void;
   onSubmit(): void;
+  onAlternateSubmit?(): void;
   onStop(): void;
   onClientCommand(action: ClientSlashCommandAction): void;
   isBusy: boolean;
   canSubmit: boolean;
+  effectiveSendBehavior: SendBehaviorMode;
+  queuedMessages: readonly QueuedSidechatMessage[];
+  onEditQueuedMessage(messageId: string): void;
+  onSendQueuedNow(messageId: string): void;
   shortcutLabel: string;
 
   // Paseo Attachments (`+` menu & attachment tray)
@@ -165,10 +176,15 @@ export function SidechatComposerBar({
   draft,
   onChangeDraft,
   onSubmit,
+  onAlternateSubmit,
   onStop,
   onClientCommand,
   isBusy,
   canSubmit,
+  effectiveSendBehavior,
+  queuedMessages,
+  onEditQueuedMessage,
+  onSendQueuedNow,
   shortcutLabel: _shortcutLabel,
   attachments,
   onChangeAttachments,
@@ -726,6 +742,26 @@ export function SidechatComposerBar({
     : t("composerInputPlaceholder");
 
   const pillClearance = isTouch ? 8 : 10;
+  const canQueueInThread = Boolean(activeSideAgentId);
+  const alternateSendAction = resolveAlternateSendAction({
+    defaultSendBehavior: effectiveSendBehavior,
+    isAgentRunning: isBusy,
+    canQueue: canQueueInThread,
+  });
+  const defaultActionQueues = effectiveSendBehavior === "queue" && isBusy && canQueueInThread;
+  const submitButtonLabel = defaultActionQueues
+    ? t("queueMessage")
+    : isBusy && canQueueInThread
+      ? effectiveSendBehavior === "steer"
+        ? t("sendAndSteer")
+        : t("sendAndInterrupt")
+      : t("sendButton");
+  const submitButtonHint =
+    alternateSendAction === "queue"
+      ? t("longPressToQueue")
+      : alternateSendAction === "send"
+        ? t("longPressToSendNow")
+        : undefined;
 
   return (
     <View
@@ -747,6 +783,92 @@ export function SidechatComposerBar({
           alignSelf: "center",
         }}
       >
+        {/* Paseo Queued Messages Track (`Ye` + `rt`: Edit pencil + Send now arrow) */}
+        {queuedMessages.length > 0 ? (
+          <View
+            style={{
+              flexDirection: "column",
+              gap: 8,
+              paddingTop: pillClearance,
+              paddingBottom: hasFloatingPillRow ? 2 : pillClearance,
+            }}
+          >
+            {queuedMessages.map((item) => {
+              const rowLabel = deriveQueuedMessageLabel(item);
+              return (
+                <View
+                  key={item.id}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    backgroundColor: colors.surface1,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    gap: 8,
+                  }}
+                >
+                  <Text
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                    style={{
+                      flex: 1,
+                      color: colors.foreground,
+                      fontSize: appearance.uiBaseFontSize,
+                      lineHeight: Math.round(appearance.uiBaseFontSize * 1.38),
+                    }}
+                  >
+                    {rowLabel}
+                  </Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("editQueuedMessage")}
+                      onPress={() => onEditQueuedMessage(item.id)}
+                      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                        {
+                          width: 32,
+                          height: 32,
+                          borderRadius: 999,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          backgroundColor: colors.surface2,
+                          opacity: pressed ? 0.7 : hovered ? 0.88 : 1,
+                        },
+                        pointerCursorStyle,
+                      ]}
+                    >
+                      <Icon name="Pencil" size={14} color={colors.foreground} />
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("sendQueuedMessageNow")}
+                      onPress={() => onSendQueuedNow(item.id)}
+                      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                        {
+                          width: 32,
+                          height: 32,
+                          borderRadius: 999,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          backgroundColor: colors.accent,
+                          opacity: pressed ? 0.7 : hovered ? 0.9 : 1,
+                        },
+                        pointerCursorStyle,
+                      ]}
+                    >
+                      <Icon name="ArrowUp" size={14} color={colors.accentForeground} />
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+
         {/* Paseo Floating Composer Pill Row (`composerPillStyles` above the card, keeping card height 1:1 with Paseo) */}
         {hasFloatingPillRow ? (
           <View
@@ -1169,6 +1291,11 @@ export function SidechatComposerBar({
                       if (rawTriggerKey) setDismissedTriggerKey(rawTriggerKey);
                     },
                   },
+                  onAlternateSubmit
+                    ? () => {
+                        if (canSubmit) onAlternateSubmit();
+                      }
+                    : undefined,
                 )}
                 {...composerPasteImageProps(handleAddPickedImages)}
                 style={[
@@ -1666,10 +1793,12 @@ export function SidechatComposerBar({
               ) : (
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={t("sendButton")}
+                  accessibilityLabel={submitButtonLabel}
+                  accessibilityHint={submitButtonHint}
                   accessibilityState={{ disabled: !canSubmit }}
                   disabled={!canSubmit}
                   onPress={onSubmit}
+                  onLongPress={alternateSendAction && onAlternateSubmit ? onAlternateSubmit : undefined}
                   style={({ pressed }) => [
                     {
                       width: discSize,

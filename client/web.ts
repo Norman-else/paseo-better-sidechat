@@ -277,6 +277,7 @@ export function composerWebKeyProps(
   sendShortcut: SendShortcutMode,
   onSubmit: () => void,
   autocomplete?: AutocompleteKeyboardHandlers,
+  onAlternateSubmit?: () => void,
 ): Record<string, unknown> {
   if (Platform.OS !== "web") return {};
   return {
@@ -327,10 +328,14 @@ export function composerWebKeyProps(
         }
         return;
       }
-      // `sendShortcut === "enter"`: Enter submits, Shift+Enter inserts newline.
-      if (!ev.shiftKey && !ev.altKey) {
-        ev.preventDefault?.();
-        syntheticEvent.preventDefault?.();
+      // `sendShortcut === "enter"`: Shift+Enter inserts newline; Cmd/Ctrl+Enter triggers
+      // Paseo's alternate action (force-send when in Queue mode, or queue when in Steer/Interrupt).
+      if (ev.shiftKey || ev.altKey) return;
+      ev.preventDefault?.();
+      syntheticEvent.preventDefault?.();
+      if ((ev.metaKey || ev.ctrlKey) && onAlternateSubmit) {
+        onAlternateSubmit();
+      } else {
         onSubmit();
       }
     },

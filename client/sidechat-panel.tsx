@@ -76,6 +76,15 @@ import {
   sidechatSettings,
 } from "../shared/settings";
 import {
+  clearThreadQueue,
+  enqueueThreadMessage,
+  prependThreadMessage,
+  type QueuedSidechatMessage,
+  removeThreadMessageById,
+  resolveActiveSendBehavior,
+  resolveSubmitAction,
+} from "../shared/queue";
+import {
   buildDefaultStarterPrompts,
   type StarterPromptItem,
 } from "../shared/starters";
@@ -515,10 +524,29 @@ function SidechatSurface({
   const [timelineState, setTimelineState] = useState<TimelineState>(() =>
     createEmptyTimelineState(),
   );
+  const [syncedTimelineAgentId, setSyncedTimelineAgentId] = useState<string | null>(null);
   const [loadingTimeline, setLoadingTimeline] = useState(false);
   const [pendingPermissions, setPendingPermissions] = useState<AgentPermissionRequest[]>([]);
   const [lastUsage, setLastUsage] = useState<AgentUsage | null>(null);
   const [creatingThread, setCreatingThread] = useState(false);
+
+  // Per-thread queued messages (`appearance.sendBehavior === "queue"` or alternate Queue action)
+  const [queuedMessagesByThread, setQueuedMessagesByThread] = useState<
+    Map<string, QueuedSidechatMessage[]>
+  >(() => new Map());
+  const queuedMessagesRef = useRef(queuedMessagesByThread);
+  queuedMessagesRef.current = queuedMessagesByThread;
+  const drainInFlightRef = useRef<Set<string>>(new Set());
+  const sendInFlightAgentIdRef = useRef<string | null>(null);
+
+  const updateThreadQueues = useCallback(
+    (updater: (prev: Map<string, QueuedSidechatMessage[]>) => Map<string, QueuedSidechatMessage[]>) => {
+      const next = updater(queuedMessagesRef.current);
+      queuedMessagesRef.current = next;
+      setQueuedMessagesByThread(next);
+    },
+    [],
+  );
 
   // Per-thread manual expand/collapse toggles
   const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
@@ -568,6 +596,7 @@ function SidechatSurface({
   useEffect(() => {
     if (!activeSideAgentId) {
       setTimelineState(createEmptyTimelineState());
+      setSyncedTimelineAgentId(null);
       setPendingPermissions([]);
       setLastUsage(null);
       setLoadingTimeline(false);
@@ -576,6 +605,7 @@ function SidechatSurface({
 
     let cancelled = false;
     let initialSendInFlight = false;
+    setSyncedTimelineAgentId(null);
     setLastUsage(null);
     const handle = paseo.agents.ref(activeSideAgentId);
     const pendingSend =
@@ -585,6 +615,7 @@ function SidechatSurface({
     if (pendingSend) {
       pendingInitialSendRef.current = null;
       initialSendInFlight = true;
+      setSyncedTimelineAgentId(activeSideAgentId);
       setLoadingTimeline(false);
     } else {
       setLoadingTimeline(true);
@@ -608,6 +639,7 @@ function SidechatSurface({
             );
             return fromTimelineSnapshot(snapshot, optimistic);
           });
+          setSyncedTimelineAgentId(activeSideAgentId);
         }
       } catch {
         // Ignore transient disconnect; subscription_restored will refetch.
@@ -648,7 +680,12 @@ function SidechatSurface({
         }
         const running =
           update.agent.status === "running" || Boolean(update.agent.activeTurn?.turnId);
-        if (!running && initialSendInFlight) {
+        if (
+          !running &&
+          (initialSendInFlight ||
+            sendInFlightAgentIdRef.current === activeSideAgentId ||
+            drainInFlightRef.current.has(activeSideAgentId))
+        ) {
           return;
         }
         setTimelineState((prev) =>
@@ -688,6 +725,14 @@ function SidechatSurface({
   }, [activeSideAgentId, paseo, toast]);
 
   const isBusy = creatingThread || timelineState.isTurnActive;
+  const effectiveSendBehavior = resolveActiveSendBehavior(
+    appearance.sendBehavior,
+    pendingPermissions.length > 0,
+  );
+  const activeQueuedMessages = useMemo(
+    () => (activeSideAgentId ? queuedMessagesByThread.get(activeSideAgentId) ?? [] : []),
+    [activeSideAgentId, queuedMessagesByThread],
+  );
 
   useEffect(() => {
     if (!isBusy) {
@@ -797,27 +842,116 @@ function SidechatSurface({
     });
   }, []);
 
+  const dispatchExistingThreadMessage = useCallback(
+    async (
+      targetSideAgentId: string,
+      payload: {
+        id: string;
+        text: string;
+        attachments: readonly SidechatComposerAttachment[];
+        quotedSelection: string | null;
+        attachMainContext: boolean;
+      },
+      options?: {
+        activeTurnBehavior?: "steer" | "interrupt";
+        restoreItemOnError?: QueuedSidechatMessage;
+      },
+    ): Promise<boolean> => {
+      const { images, attachments: wireAttachments } = splitSidechatAttachmentsForSubmit(
+        payload.attachments,
+      );
+      const effectiveLabel = deriveEffectivePromptLabel(payload.text, payload.attachments);
+      const clientMessageId = makeClientMessageId();
+
+      stickToBottomRef.current = true;
+      setTurnStartedAtMs(Date.now());
+      sendInFlightAgentIdRef.current = targetSideAgentId;
+      let mainDigestText: string | null = null;
+      if (payload.attachMainContext && mainAgentId) {
+        try {
+          const ctxRes = await callMainContext({
+            agentId: mainAgentId,
+            maxTurns: prefs.contextTurns,
+          });
+          if (ctxRes.available && ctxRes.digest) {
+            mainDigestText = ctxRes.digest.digest;
+          }
+        } catch {
+          mainDigestText = null;
+        }
+      }
+
+      const composed = composeSidechatPrompt({
+        text: payload.text,
+        mainContext: mainDigestText,
+        quotedSelection: payload.quotedSelection,
+      });
+
+      setTimelineState((prev) => ({
+        ...appendOptimisticUserMessage(prev, {
+          text: composed.trim() ? composed : effectiveLabel,
+          clientMessageId,
+        }),
+        isTurnActive: true,
+      }));
+
+      try {
+        await paseo.agents.ref(targetSideAgentId).send(composed, {
+          messageId: clientMessageId,
+          ...(options?.activeTurnBehavior
+            ? { activeTurnBehavior: options.activeTurnBehavior }
+            : {}),
+          images,
+          attachments: wireAttachments,
+        });
+        void callUpdateThread({
+          agentId: targetSideAgentId,
+          workspaceId,
+          action: "touch",
+        }).then(() => queryClient.invalidateQueries({ queryKey: threadsQueryKey }));
+        return true;
+      } catch (error) {
+        if (options?.restoreItemOnError) {
+          const rollbackItem = options.restoreItemOnError;
+          updateThreadQueues((prev) =>
+            prependThreadMessage(prev, targetSideAgentId, rollbackItem),
+          );
+        }
+        setTimelineState((prev) => ({ ...prev, isTurnActive: false }));
+        toast.error(error instanceof Error ? error.message : "Failed to send message");
+        return false;
+      } finally {
+        if (sendInFlightAgentIdRef.current === targetSideAgentId) {
+          sendInFlightAgentIdRef.current = null;
+        }
+      }
+    },
+    [
+      mainAgentId,
+      prefs.contextTurns,
+      workspaceId,
+      callMainContext,
+      callUpdateThread,
+      paseo,
+      queryClient,
+      threadsQueryKey,
+      toast,
+      updateThreadQueues,
+    ],
+  );
+
   const sendPromptText = useCallback(
     async (
       rawInputText: string,
       options?: {
         forceNewThread?: boolean;
         attachmentsOverride?: readonly SidechatComposerAttachment[];
+        alternateAction?: boolean;
       },
     ) => {
       const activeAttachments = options?.attachmentsOverride ?? composerAttachments;
       const trimmed = rawInputText.trim();
       if ((!trimmed && activeAttachments.length === 0) || !effectiveCwd) return;
-
-      const { images, attachments: wireAttachments } =
-        splitSidechatAttachmentsForSubmit(activeAttachments);
-      const effectiveLabel = deriveEffectivePromptLabel(trimmed, activeAttachments);
-
-      const clientMessageId = makeClientMessageId();
-      const quoteToSend = attachedQuote;
-      setAttachedQuote(null);
-      setComposerAttachments([]);
-      stickToBottomRef.current = true;
 
       const targetSideAgentId = options?.forceNewThread ? null : latestTabStateRef.current.sideAgentId;
 
@@ -827,6 +961,8 @@ function SidechatSurface({
         hasActiveThread: Boolean(targetSideAgentId),
       });
       if (immediateClientCmd && targetSideAgentId) {
+        setAttachedQuote(null);
+        setComposerAttachments([]);
         patchTabState({ draft: "" });
         if (immediateClientCmd.action === "new-thread") {
           patchTabState({ sideAgentId: null, contextOverride: null, draft: "" });
@@ -834,6 +970,7 @@ function SidechatSurface({
         } else {
           const nextThread = threads.find((item) => item.agentId !== targetSideAgentId) ?? null;
           patchTabState({ sideAgentId: nextThread?.agentId ?? null, draft: "" });
+          updateThreadQueues((prev) => clearThreadQueue(prev, targetSideAgentId));
           await callUpdateThread({
             agentId: targetSideAgentId,
             workspaceId,
@@ -843,6 +980,41 @@ function SidechatSurface({
         }
         return;
       }
+
+      const resolution = resolveSubmitAction({
+        hasSendableContent: Boolean(trimmed || activeAttachments.length > 0),
+        isAgentRunning: Boolean(targetSideAgentId) && isBusy,
+        defaultSendBehavior: effectiveSendBehavior,
+        canQueue: Boolean(targetSideAgentId),
+        alternate: options?.alternateAction,
+      });
+      if (resolution.kind === "noop") return;
+
+      const quoteToSend = attachedQuote;
+      const attachContextNow = shouldAttachMainContext;
+      setAttachedQuote(null);
+      setComposerAttachments([]);
+
+      if (resolution.kind === "queue") {
+        if (targetSideAgentId) {
+          const queuedItem: QueuedSidechatMessage = {
+            id: makeClientMessageId(),
+            text: trimmed,
+            attachments: [...activeAttachments],
+            quotedSelection: quoteToSend,
+            attachMainContext: attachContextNow,
+          };
+          patchTabState({ draft: "", contextOverride: null });
+          updateThreadQueues((prev) => enqueueThreadMessage(prev, targetSideAgentId, queuedItem));
+        }
+        return;
+      }
+
+      stickToBottomRef.current = true;
+      const { images, attachments: wireAttachments } =
+        splitSidechatAttachmentsForSubmit(activeAttachments);
+      const effectiveLabel = deriveEffectivePromptLabel(trimmed, activeAttachments);
+      const clientMessageId = makeClientMessageId();
 
       if (!targetSideAgentId) {
         setTurnStartedAtMs(Date.now());
@@ -876,7 +1048,7 @@ function SidechatSurface({
             thinkingOptionId: effectiveThinkingId,
             providerOptions: tabState.draftOptions,
             fastMode: Boolean(effectiveOptions.fast_mode),
-            attachMainContext: shouldAttachMainContext,
+            attachMainContext: attachContextNow,
             quotedSelection: quoteToSend,
             deferInitialSend: true,
           });
@@ -902,62 +1074,34 @@ function SidechatSurface({
           setTimelineState(createEmptyTimelineState());
           patchTabState({ draft: trimmed });
           setComposerAttachments([...activeAttachments]);
+          setAttachedQuote(quoteToSend);
         } finally {
           setCreatingThread(false);
         }
         return;
       }
 
-      // Existing sidechat thread: optionally attach fresh main-session context if enabled.
-      setTurnStartedAtMs(Date.now());
+      // Existing sidechat thread: dispatch immediately with Paseo's activeTurnBehavior.
       patchTabState({ draft: "", contextOverride: null });
-      let mainDigestText: string | null = null;
-      if (shouldAttachMainContext && mainAgentId) {
-        try {
-          const ctxRes = await callMainContext({
-            agentId: mainAgentId,
-            maxTurns: prefs.contextTurns,
-          });
-          if (ctxRes.available && ctxRes.digest) {
-            mainDigestText = ctxRes.digest.digest;
-          }
-        } catch {
-          mainDigestText = null;
-        }
-      }
-
-      const composed = composeSidechatPrompt({
-        text: trimmed,
-        mainContext: mainDigestText,
-        quotedSelection: quoteToSend,
-      });
-
-      setTimelineState((prev) =>
-        appendOptimisticUserMessage(prev, {
-          text: composed.trim() ? composed : effectiveLabel,
-          clientMessageId,
-        }),
+      await dispatchExistingThreadMessage(
+        targetSideAgentId,
+        {
+          id: clientMessageId,
+          text: trimmed,
+          attachments: activeAttachments,
+          quotedSelection: quoteToSend,
+          attachMainContext: attachContextNow,
+        },
+        {
+          activeTurnBehavior: resolution.activeTurnBehavior,
+        },
       );
-
-      try {
-        await paseo.agents.ref(targetSideAgentId).send(composed, {
-          messageId: clientMessageId,
-          activeTurnBehavior: appearance.sendBehavior === "interrupt" ? "interrupt" : "steer",
-          images,
-          attachments: wireAttachments,
-        });
-        void callUpdateThread({
-          agentId: targetSideAgentId,
-          workspaceId,
-          action: "touch",
-        }).then(() => queryClient.invalidateQueries({ queryKey: threadsQueryKey }));
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to send message");
-      }
     },
     [
       composerAttachments,
       effectiveCwd,
+      isBusy,
+      effectiveSendBehavior,
       attachedQuote,
       effectiveProvider,
       effectiveModelId,
@@ -968,19 +1112,97 @@ function SidechatSurface({
       shouldAttachMainContext,
       workspaceId,
       mainAgentId,
-      prefs.contextTurns,
-      appearance.sendBehavior,
       callCreateThread,
-      callMainContext,
       callUpdateThread,
-      paseo,
+      dispatchExistingThreadMessage,
       patchTabState,
       queryClient,
       threads,
       threadsQueryKey,
       toast,
+      updateThreadQueues,
     ],
   );
+
+  const handleEditQueuedMessage = useCallback(
+    (messageId: string) => {
+      if (!activeSideAgentId) return;
+      const { next, removed } = removeThreadMessageById(
+        queuedMessagesRef.current,
+        activeSideAgentId,
+        messageId,
+      );
+      if (!removed) return;
+      queuedMessagesRef.current = next;
+      setQueuedMessagesByThread(next);
+      patchTabState({
+        draft: removed.text,
+        ...(removed.attachMainContext ? { contextOverride: true } : {}),
+      });
+      setComposerAttachments([...removed.attachments]);
+      setAttachedQuote(removed.quotedSelection);
+    },
+    [activeSideAgentId, patchTabState],
+  );
+
+  const handleSendQueuedNow = useCallback(
+    (messageId: string) => {
+      if (!activeSideAgentId) return;
+      const { next, removed } = removeThreadMessageById(
+        queuedMessagesRef.current,
+        activeSideAgentId,
+        messageId,
+      );
+      if (!removed) return;
+      queuedMessagesRef.current = next;
+      setQueuedMessagesByThread(next);
+      void dispatchExistingThreadMessage(activeSideAgentId, removed, {
+        activeTurnBehavior: effectiveSendBehavior === "steer" ? "steer" : "interrupt",
+        restoreItemOnError: removed,
+      });
+    },
+    [activeSideAgentId, dispatchExistingThreadMessage, effectiveSendBehavior],
+  );
+
+  // Auto-drain the next queued message when a running turn finishes without pending permissions
+  // (mirrors Paseo's `drainQueuedAgentMessage` on `onAgentStoppedRunning`).
+  useEffect(() => {
+    if (!activeSideAgentId) return;
+    if (syncedTimelineAgentId !== activeSideAgentId || loadingTimeline) return;
+    if (creatingThread || timelineState.isTurnActive || pendingPermissions.length > 0) return;
+    if (drainInFlightRef.current.has(activeSideAgentId)) return;
+
+    const currentQueue = queuedMessagesRef.current.get(activeSideAgentId);
+    if (!currentQueue || currentQueue.length === 0) return;
+
+    const head = currentQueue[0];
+    const { next, removed } = removeThreadMessageById(
+      queuedMessagesRef.current,
+      activeSideAgentId,
+      head.id,
+    );
+    if (!removed) return;
+
+    queuedMessagesRef.current = next;
+    setQueuedMessagesByThread(next);
+    drainInFlightRef.current.add(activeSideAgentId);
+
+    void dispatchExistingThreadMessage(activeSideAgentId, removed, {
+      activeTurnBehavior: "steer",
+      restoreItemOnError: removed,
+    }).finally(() => {
+      drainInFlightRef.current.delete(activeSideAgentId);
+    });
+  }, [
+    activeSideAgentId,
+    syncedTimelineAgentId,
+    loadingTimeline,
+    creatingThread,
+    timelineState.isTurnActive,
+    pendingPermissions.length,
+    queuedMessagesByThread,
+    dispatchExistingThreadMessage,
+  ]);
 
   const sendPromptRef = useRef(sendPromptText);
   sendPromptRef.current = sendPromptText;
@@ -1073,13 +1295,14 @@ function SidechatSurface({
     const archivingId = activeSideAgentId;
     const nextThread = threads.find((item) => item.agentId !== archivingId) ?? null;
     patchTabState({ sideAgentId: nextThread?.agentId ?? null });
+    updateThreadQueues((prev) => clearThreadQueue(prev, archivingId));
     await callUpdateThread({
       agentId: archivingId,
       workspaceId,
       action: "archive",
     }).catch(() => {});
     void queryClient.invalidateQueries({ queryKey: threadsQueryKey });
-  }, [activeSideAgentId, threads, patchTabState, callUpdateThread, workspaceId, queryClient, threadsQueryKey]);
+  }, [activeSideAgentId, threads, patchTabState, callUpdateThread, workspaceId, queryClient, threadsQueryKey, updateThreadQueues]);
 
   const handleClientSlashCommand = useCallback(
     (action: ClientSlashCommandAction) => {
@@ -2030,6 +2253,11 @@ function SidechatSurface({
             void sendPromptText(latestTabStateRef.current.draft);
           }
         }}
+        onAlternateSubmit={() => {
+          if (latestTabStateRef.current.draft.trim() || composerAttachments.length > 0) {
+            void sendPromptText(latestTabStateRef.current.draft, { alternateAction: true });
+          }
+        }}
         onStop={() => {
           void handleStopTurn();
         }}
@@ -2041,6 +2269,10 @@ function SidechatSurface({
             !creatingThread &&
             uploadingCount === 0,
         )}
+        effectiveSendBehavior={effectiveSendBehavior}
+        queuedMessages={activeQueuedMessages}
+        onEditQueuedMessage={handleEditQueuedMessage}
+        onSendQueuedNow={handleSendQueuedNow}
         shortcutLabel={shortcutLabel}
         attachments={composerAttachments}
         onChangeAttachments={setComposerAttachments}
