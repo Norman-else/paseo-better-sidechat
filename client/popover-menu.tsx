@@ -4,6 +4,14 @@ import { useEffect, useId, type ReactNode } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { pointerCursorStyle, popoverScopeProps, watchPopoverDismiss } from "./web";
 
+export interface MenuOptionTrailingAction {
+  icon: string;
+  accessibilityLabel: string;
+  danger?: boolean;
+  keepMenuOpen?: boolean;
+  onPress(): void;
+}
+
 export interface MenuOption {
   id: string;
   label: string;
@@ -13,6 +21,7 @@ export interface MenuOption {
   iconSvg?: string | null;
   selected?: boolean;
   danger?: boolean;
+  trailingAction?: MenuOptionTrailingAction;
   onSelect(): void;
 }
 
@@ -108,65 +117,110 @@ export function PopoverMenu({
                 </View>
               ) : null}
 
-              <Pressable
-                accessibilityRole="menuitem"
-                accessibilityLabel={opt.label}
-                accessibilityState={{ selected: Boolean(opt.selected) }}
-                onPress={() => {
-                  onOpenChange(false);
-                  opt.onSelect();
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  marginHorizontal: 4,
+                  borderRadius: 6,
+                  backgroundColor: opt.selected ? colors.surface1 : "transparent",
                 }}
-                style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                  {
-                    minHeight: rowHeight,
-                    paddingHorizontal: 10,
-                    paddingVertical: 6,
-                    marginHorizontal: 4,
-                    borderRadius: 6,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 8,
-                    backgroundColor:
-                      pressed || hovered
-                        ? colors.surface2
-                        : opt.selected
-                          ? colors.surface1
-                          : "transparent",
-                  },
-                  pointerCursorStyle,
-                ]}
               >
-                {opt.iconSvg ? (
-                  <Icon icon={{ svg: opt.iconSvg }} size={iconSize} color={iconColor} />
-                ) : opt.icon ? (
-                  <Icon name={opt.icon} size={iconSize} color={iconColor} />
-                ) : null}
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text
-                    numberOfLines={1}
-                    style={{
-                      fontSize: uiFontSize,
-                      fontWeight: opt.selected ? "600" : "400",
-                      color: opt.danger ? colors.statusDanger : colors.foreground,
-                    }}
-                  >
-                    {opt.label}
-                  </Text>
-                  {opt.subtitle ? (
+                <Pressable
+                  accessibilityRole="menuitem"
+                  accessibilityLabel={opt.label}
+                  accessibilityState={{ selected: Boolean(opt.selected) }}
+                  onPress={() => {
+                    onOpenChange(false);
+                    opt.onSelect();
+                  }}
+                  style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                    {
+                      flex: 1,
+                      minWidth: 0,
+                      minHeight: rowHeight,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 6,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 8,
+                      backgroundColor:
+                        pressed || hovered ? colors.surface2 : "transparent",
+                    },
+                    pointerCursorStyle,
+                  ]}
+                >
+                  {opt.iconSvg ? (
+                    <Icon icon={{ svg: opt.iconSvg }} size={iconSize} color={iconColor} />
+                  ) : opt.icon ? (
+                    <Icon name={opt.icon} size={iconSize} color={iconColor} />
+                  ) : null}
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <Text
                       numberOfLines={1}
                       style={{
-                        fontSize: Math.max(10, uiFontSize - 2),
-                        color: colors.foregroundMuted,
-                        marginTop: 1,
+                        fontSize: uiFontSize,
+                        fontWeight: opt.selected ? "600" : "400",
+                        color: opt.danger ? colors.statusDanger : colors.foreground,
                       }}
                     >
-                      {opt.subtitle}
+                      {opt.label}
                     </Text>
-                  ) : null}
-                </View>
-                {opt.selected ? <Icon name="Check" size={14} color={colors.accent} /> : null}
-              </Pressable>
+                    {opt.subtitle ? (
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          fontSize: Math.max(10, uiFontSize - 2),
+                          color: colors.foregroundMuted,
+                          marginTop: 1,
+                        }}
+                      >
+                        {opt.subtitle}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {opt.selected ? <Icon name="Check" size={14} color={colors.accent} /> : null}
+                </Pressable>
+                {opt.trailingAction ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={opt.trailingAction.accessibilityLabel}
+                    hitSlop={4}
+                    onPress={() => {
+                      if (!opt.trailingAction?.keepMenuOpen) {
+                        onOpenChange(false);
+                      }
+                      opt.trailingAction?.onPress();
+                    }}
+                    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                      {
+                        width: useSheet ? 36 : 26,
+                        height: useSheet ? 36 : 26,
+                        marginRight: 4,
+                        borderRadius: 6,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor:
+                          pressed || hovered ? colors.surface2 : "transparent",
+                      },
+                      pointerCursorStyle,
+                    ]}
+                  >
+                    {({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => (
+                      <Icon
+                        name={opt.trailingAction!.icon}
+                        size={Math.max(13, iconSize - 1)}
+                        color={
+                          opt.trailingAction!.danger && (pressed || hovered)
+                            ? colors.statusDanger
+                            : colors.foregroundMuted
+                        }
+                      />
+                    )}
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
           );
         })

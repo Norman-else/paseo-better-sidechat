@@ -1290,19 +1290,45 @@ function SidechatSurface({
     [mainAgentId, locale, paseo, appearance.sendBehavior, t, toast],
   );
 
+  const handleArchiveThread = useCallback(
+    async (targetAgentId: string) => {
+      if (!targetAgentId) return;
+      queryClient.setQueryData<{ threads: SidechatThread[] }>(threadsQueryKey, (prev) =>
+        prev
+          ? { ...prev, threads: prev.threads.filter((item) => item.agentId !== targetAgentId) }
+          : prev,
+      );
+      if (targetAgentId === activeSideAgentId) {
+        const nextThread = threads.find((item) => item.agentId !== targetAgentId) ?? null;
+        patchTabState({ sideAgentId: nextThread?.agentId ?? null });
+        if (!nextThread) {
+          setTimelineState(createEmptyTimelineState());
+        }
+      }
+      updateThreadQueues((prev) => clearThreadQueue(prev, targetAgentId));
+      await callUpdateThread({
+        agentId: targetAgentId,
+        workspaceId,
+        action: "archive",
+      }).catch(() => {});
+      void queryClient.invalidateQueries({ queryKey: threadsQueryKey });
+    },
+    [
+      activeSideAgentId,
+      threads,
+      patchTabState,
+      callUpdateThread,
+      workspaceId,
+      queryClient,
+      threadsQueryKey,
+      updateThreadQueues,
+    ],
+  );
+
   const handleArchiveActiveThread = useCallback(async () => {
     if (!activeSideAgentId) return;
-    const archivingId = activeSideAgentId;
-    const nextThread = threads.find((item) => item.agentId !== archivingId) ?? null;
-    patchTabState({ sideAgentId: nextThread?.agentId ?? null });
-    updateThreadQueues((prev) => clearThreadQueue(prev, archivingId));
-    await callUpdateThread({
-      agentId: archivingId,
-      workspaceId,
-      action: "archive",
-    }).catch(() => {});
-    void queryClient.invalidateQueries({ queryKey: threadsQueryKey });
-  }, [activeSideAgentId, threads, patchTabState, callUpdateThread, workspaceId, queryClient, threadsQueryKey, updateThreadQueues]);
+    await handleArchiveThread(activeSideAgentId);
+  }, [activeSideAgentId, handleArchiveThread]);
 
   const handleClientSlashCommand = useCallback(
     (action: ClientSlashCommandAction) => {
@@ -1351,13 +1377,23 @@ function SidechatSurface({
         thread.status === "running"
           ? null
           : resolveProviderIconSvg(thread.provider, entry?.iconSvg);
+      const threadLabel = thread.title || t("untitledThread");
       opts.push({
         id: thread.agentId,
-        label: thread.title || t("untitledThread"),
+        label: threadLabel,
         subtitle: `${providerLabel}${thread.model ? ` · ${thread.model}` : ""}`,
         icon: thread.status === "running" ? "LoaderCircle" : "MessageSquare",
         iconSvg: threadSvg,
         selected: thread.agentId === activeSideAgentId,
+        trailingAction: {
+          icon: "Trash2",
+          accessibilityLabel: `${t("archiveThread")}: ${threadLabel}`,
+          danger: true,
+          keepMenuOpen: thread.agentId !== activeSideAgentId,
+          onPress: () => {
+            void handleArchiveThread(thread.agentId);
+          },
+        },
         onSelect: () => {
           patchTabState({ sideAgentId: thread.agentId, contextOverride: null });
         },
@@ -1393,6 +1429,7 @@ function SidechatSurface({
     host.id,
     t,
     patchTabState,
+    handleArchiveThread,
     handleArchiveActiveThread,
   ]);
 
