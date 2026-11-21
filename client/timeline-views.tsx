@@ -593,6 +593,7 @@ const SummaryGroupRow = memo(function SummaryGroupRow({
 const AssistantMessageRow = memo(function AssistantMessageRow({
   item,
   questionText,
+  showActions,
   canInsertToMain,
   canSendToMain,
   onInsertToMain,
@@ -604,6 +605,7 @@ const AssistantMessageRow = memo(function AssistantMessageRow({
 }: SharedRowVisualProps & {
   item: SidechatAssistantItem;
   questionText: string | null;
+  showActions: boolean;
   canInsertToMain: boolean;
   canSendToMain: boolean;
   onInsertToMain(question: string | null, answer: string): void;
@@ -634,7 +636,7 @@ const AssistantMessageRow = memo(function AssistantMessageRow({
         )}
       </View>
 
-      {!item.streaming && item.text.trim() ? (
+      {showActions && !item.streaming && item.text.trim() ? (
         <View
           style={{
             flexDirection: "row",
@@ -950,6 +952,7 @@ export function SidechatTimelineRowView({
           {...shared}
           item={row.item}
           questionText={row.questionText}
+          showActions={row.showActions}
           canInsertToMain={canInsertToMain}
           canSendToMain={canSendToMain}
           onInsertToMain={onInsertToMain}

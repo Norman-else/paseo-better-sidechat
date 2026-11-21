@@ -361,3 +361,140 @@ test("projectTimelineRows keeps trailing active tool call visible during an open
     ["user_message", "tool_call", "tool_call"],
   );
 });
+
+test("showActions never appears mid-turn or on intermediate assistant narration before subsequent tool calls", () => {
+  const midTurnEntries = [
+    {
+      provider: "claude",
+      turnId: "t-multi",
+      timestamp: "2026-11-21T03:05:00Z",
+      seqStart: 1,
+      seqEnd: 1,
+      item: { type: "user_message" as const, text: "再帮我看下有没有最新的需要我处理的 request" },
+    },
+    {
+      provider: "claude",
+      turnId: "t-multi",
+      timestamp: "2026-11-21T03:05:01Z",
+      seqStart: 2,
+      seqEnd: 2,
+      item: { type: "reasoning" as const, text: "Checking tools" },
+    },
+    {
+      provider: "claude",
+      turnId: "t-multi",
+      timestamp: "2026-11-21T03:05:02Z",
+      seqStart: 3,
+      seqEnd: 3,
+      item: {
+        type: "tool_call" as const,
+        callId: "c1",
+        name: "ToolSearch",
+        status: "completed" as const,
+        error: null,
+        detail: { type: "search" as const, query: "slack" },
+      },
+    },
+    {
+      provider: "claude",
+      turnId: "t-multi",
+      timestamp: "2026-11-21T03:05:03Z",
+      seqStart: 4,
+      seqEnd: 4,
+      item: { type: "assistant_message" as const, text: "Need Slack tool. Search deferred tools." },
+    },
+    {
+      provider: "claude",
+      turnId: "t-multi",
+      timestamp: "2026-11-21T03:05:04Z",
+      seqStart: 5,
+      seqEnd: 5,
+      item: { type: "reasoning" as const, text: "Searching deferred MCP tools" },
+    },
+    {
+      provider: "claude",
+      turnId: "t-multi",
+      timestamp: "2026-11-21T03:05:05Z",
+      seqStart: 6,
+      seqEnd: 6,
+      item: {
+        type: "tool_call" as const,
+        callId: "c2",
+        name: "ToolSearch",
+        status: "completed" as const,
+        error: null,
+        detail: { type: "search" as const, query: "slack-personal" },
+      },
+    },
+  ];
+
+  // 1. Mid-turn (even if isTurnActive temporarily flickered false, subsequent thought/tool after assistant_message suppresses showActions!)
+  const midTurnSnapshot = fromTimelineSnapshot({
+    epoch: "e3",
+    window: { minSeq: 0, maxSeq: 6, nextSeq: 7 },
+    agent: { status: "running", activeTurn: { turnId: "t-multi", startedAt: "2026-11-21T03:05:00Z" } },
+    entries: midTurnEntries,
+  });
+
+  const midTurnRows = projectTimelineRows(midTurnSnapshot.items, {
+    chatDisplay: "collapseToolCalls",
+    autoExpandReasoning: false,
+    isTurnActive: false,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const midTurnAssistantRows = midTurnRows.filter(
+    (r): r is Extract<typeof r, { kind: "assistant_message" }> => r.kind === "assistant_message",
+  );
+  assert.equal(midTurnAssistantRows.length, 1);
+  assert.equal(midTurnAssistantRows[0].showActions, false);
+
+  // 2. After final conclusion arrives and turn completes: ONLY the final assistant message has showActions=true!
+  const completedSnapshot = fromTimelineSnapshot({
+    epoch: "e3",
+    window: { minSeq: 0, maxSeq: 7, nextSeq: 8 },
+    agent: { status: "idle", activeTurn: null },
+    entries: [
+      ...midTurnEntries,
+      {
+        provider: "claude",
+        turnId: "t-multi",
+        timestamp: "2026-11-21T03:05:08Z",
+        seqStart: 7,
+        seqEnd: 7,
+        item: { type: "assistant_message" as const, text: "目前没有需要你处理的新请求。" },
+      },
+    ],
+  });
+
+  // In `collapseToolCalls`: intermediate narration has showActions=false, final answer has showActions=true
+  const completedToolRows = projectTimelineRows(completedSnapshot.items, {
+    chatDisplay: "collapseToolCalls",
+    autoExpandReasoning: false,
+    isTurnActive: false,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const assistantRows = completedToolRows.filter(
+    (r): r is Extract<typeof r, { kind: "assistant_message" }> => r.kind === "assistant_message",
+  );
+  assert.equal(assistantRows.length, 2);
+  assert.equal(assistantRows[0].item.text, "Need Slack tool. Search deferred tools.");
+  assert.equal(assistantRows[0].showActions, false);
+  assert.equal(assistantRows[1].item.text, "目前没有需要你处理的新请求。");
+  assert.equal(assistantRows[1].showActions, true);
+
+  // While turn is still streaming the final message (`isTurnActive: true`), showActions is false on ALL messages
+  const stillRunningRows = projectTimelineRows(completedSnapshot.items, {
+    chatDisplay: "collapseToolCalls",
+    autoExpandReasoning: false,
+    isTurnActive: true,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  for (const r of stillRunningRows) {
+    if (r.kind === "assistant_message") {
+      assert.equal(r.showActions, false);
+    }
+  }
+});

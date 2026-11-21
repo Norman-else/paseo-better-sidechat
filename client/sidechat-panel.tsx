@@ -550,6 +550,7 @@ function SidechatSurface({
     }
 
     let cancelled = false;
+    let initialSendInFlight = false;
     setLastUsage(null);
     const handle = paseo.agents.ref(activeSideAgentId);
     const pendingSend =
@@ -558,6 +559,7 @@ function SidechatSurface({
         : null;
     if (pendingSend) {
       pendingInitialSendRef.current = null;
+      initialSendInFlight = true;
       setLoadingTimeline(false);
     } else {
       setLoadingTimeline(true);
@@ -621,6 +623,9 @@ function SidechatSurface({
         }
         const running =
           update.agent.status === "running" || Boolean(update.agent.activeTurn?.turnId);
+        if (!running && initialSendInFlight) {
+          return;
+        }
         setTimelineState((prev) =>
           prev.isTurnActive === running ? prev : { ...prev, isTurnActive: running },
         );
@@ -635,7 +640,9 @@ function SidechatSurface({
           await handle.send(pendingSend.sentPrompt, {
             messageId: pendingSend.clientMessageId,
           });
+          initialSendInFlight = false;
         } catch (error) {
+          initialSendInFlight = false;
           if (!cancelled) {
             toast.error(error instanceof Error ? error.message : "Failed to send message");
             setTimelineState((prev) => ({ ...prev, isTurnActive: false }));

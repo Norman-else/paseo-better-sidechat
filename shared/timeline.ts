@@ -114,6 +114,7 @@ export type ProjectedRow =
       id: string;
       item: SidechatAssistantItem;
       questionText: string | null;
+      showActions: boolean;
     }
   | { kind: "thought"; id: string; item: SidechatThoughtItem; expanded: boolean; nested?: boolean }
   | { kind: "tool_call"; id: string; item: SidechatToolCallItem; expanded: boolean; nested?: boolean }
@@ -672,7 +673,13 @@ export function applyTimelineStreamEvent(
           const nextItems = [...baseItems];
           nextItems[existingIndex] = updated;
           return {
-            state: { ...state, epoch: nextEpoch, maxSeq: nextMaxSeq, items: nextItems },
+            state: {
+              ...state,
+              epoch: nextEpoch,
+              maxSeq: nextMaxSeq,
+              isTurnActive: state.isTurnActive || nextStatus === "running",
+              items: nextItems,
+            },
             needsRefetch: false,
           };
         }
@@ -689,7 +696,13 @@ export function applyTimelineStreamEvent(
           timestamp,
         };
         return {
-          state: { ...state, epoch: nextEpoch, maxSeq: nextMaxSeq, items: [...baseItems, created] },
+          state: {
+            ...state,
+            epoch: nextEpoch,
+            maxSeq: nextMaxSeq,
+            isTurnActive: state.isTurnActive || item.status === "running",
+            items: [...baseItems, created],
+          },
           needsRefetch: false,
         };
       }
@@ -864,6 +877,7 @@ function projectSingleWorkOrAssistant(
   item: SidechatThoughtItem | SidechatToolCallItem | SidechatAssistantItem,
   options: TimelineProjectionOptions,
   questionText: string | null,
+  finalActionableAssistantId: string | null,
   nested = false,
 ): ProjectedRow {
   if (item.kind === "thought") {
@@ -889,7 +903,42 @@ function projectSingleWorkOrAssistant(
     id: item.id,
     item,
     questionText,
+    showActions:
+      !nested && !item.streaming && Boolean(item.text.trim()) && item.id === finalActionableAssistantId,
   };
+}
+
+/**
+ * Resolves the single final `assistant_message` of a completed turn that should display
+ * the Turn Footer action bar (`Copy` / `Insert to main` / `Send to main`).
+ * Returns `null` while the turn is running or when subsequent thought/tool work followed the message.
+ */
+function resolveFinalActionableAssistantId(
+  segmentBody: ReadonlyArray<SidechatItem>,
+  isSegmentRunning: boolean,
+): string | null {
+  if (isSegmentRunning) return null;
+
+  let lastAssistantIdx = -1;
+  for (let i = segmentBody.length - 1; i >= 0; i -= 1) {
+    const entry = segmentBody[i];
+    if (entry.kind === "assistant_message" && entry.text.trim().length > 0) {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  if (lastAssistantIdx < 0) return null;
+
+  // If the model started thinking or invoking tools *after* this assistant message,
+  // it was mid-turn narration rather than a completed turn conclusion.
+  for (let j = lastAssistantIdx + 1; j < segmentBody.length; j += 1) {
+    const after = segmentBody[j];
+    if (after.kind === "thought" || after.kind === "tool_call" || after.kind === "compaction") {
+      return null;
+    }
+  }
+
+  return segmentBody[lastAssistantIdx].id;
 }
 
 /**
@@ -928,6 +977,7 @@ export function projectTimelineRows(
   const pushWithToolGrouping = (
     segmentBody: ReadonlyArray<SidechatItem>,
     questionText: string | null,
+    finalActionableAssistantId: string | null,
     groupToolCalls: boolean,
     keepLiveActiveVisible = false,
   ) => {
@@ -937,7 +987,15 @@ export function projectTimelineRows(
       if (run.length === 0) return;
       if (!groupToolCalls) {
         for (const entry of run) {
-          rows.push(projectSingleWorkOrAssistant(entry, options, questionText, false));
+          rows.push(
+            projectSingleWorkOrAssistant(
+              entry,
+              options,
+              questionText,
+              finalActionableAssistantId,
+              false,
+            ),
+          );
         }
         run = [];
         return;
@@ -957,7 +1015,15 @@ export function projectTimelineRows(
       }
 
       if (run.length === 1) {
-        rows.push(projectSingleWorkOrAssistant(run[0], options, questionText, false));
+        rows.push(
+          projectSingleWorkOrAssistant(
+            run[0],
+            options,
+            questionText,
+            finalActionableAssistantId,
+            false,
+          ),
+        );
       } else if (run.length > 1) {
         const groupId = `group:${run[0].id}`;
         const expanded = options.expandedGroupIds.has(groupId);
@@ -971,13 +1037,29 @@ export function projectTimelineRows(
         });
         if (expanded) {
           for (const entry of run) {
-            rows.push(projectSingleWorkOrAssistant(entry, options, questionText, true));
+            rows.push(
+              projectSingleWorkOrAssistant(
+                entry,
+                options,
+                questionText,
+                finalActionableAssistantId,
+                true,
+              ),
+            );
           }
         }
       }
 
       for (const liveEntry of liveTrailing) {
-        rows.push(projectSingleWorkOrAssistant(liveEntry, options, questionText, false));
+        rows.push(
+          projectSingleWorkOrAssistant(
+            liveEntry,
+            options,
+            questionText,
+            finalActionableAssistantId,
+            false,
+          ),
+        );
       }
       run = [];
     };
@@ -989,7 +1071,15 @@ export function projectTimelineRows(
       }
       flushRun();
       if (item.kind === "thought" || item.kind === "tool_call" || item.kind === "assistant_message") {
-        rows.push(projectSingleWorkOrAssistant(item, options, questionText, false));
+        rows.push(
+          projectSingleWorkOrAssistant(
+            item,
+            options,
+            questionText,
+            finalActionableAssistantId,
+            false,
+          ),
+        );
       } else if (item.kind === "todo_list") {
         rows.push({ kind: "todo_list", id: item.id, item });
       } else if (item.kind === "notification") {
@@ -1015,22 +1105,30 @@ export function projectTimelineRows(
       });
     }
 
-    const isTurnOpen = isLatestSegment && options.isTurnActive;
+    const hasRunningStepInSegment = segment.body.some(
+      (entry) =>
+        (entry.kind === "thought" && entry.status !== "ready") ||
+        (entry.kind === "tool_call" && entry.status === "running") ||
+        (entry.kind === "assistant_message" && entry.streaming) ||
+        (entry.kind === "compaction" && entry.status === "loading"),
+    );
+    const isTurnOpen = (isLatestSegment && options.isTurnActive) || hasRunningStepInSegment;
+    const finalActionableAssistantId = resolveFinalActionableAssistantId(
+      segment.body,
+      isTurnOpen,
+    );
 
     if (options.chatDisplay !== "collapseTurns") {
       pushWithToolGrouping(
         segment.body,
         questionText,
+        finalActionableAssistantId,
         options.chatDisplay === "collapseToolCalls",
         isTurnOpen,
       );
       return;
     }
 
-    // `collapseTurns`: Mirror Paseo's turn folding:
-    // While the latest turn is actively running, keep intermediate work grouped with `collapseToolCalls`
-    // (and active trailing step unfolded) so live progress is visible; once the turn finishes, fold all
-    // pre-answer intermediate steps into a single `turn_summary` row!
     let lastAssistantIdx = -1;
     for (let i = segment.body.length - 1; i >= 0; i -= 1) {
       if (segment.body[i].kind === "assistant_message") {
@@ -1040,7 +1138,13 @@ export function projectTimelineRows(
     }
 
     if (isTurnOpen || lastAssistantIdx <= 0) {
-      pushWithToolGrouping(segment.body, questionText, true, isTurnOpen);
+      pushWithToolGrouping(
+        segment.body,
+        questionText,
+        finalActionableAssistantId,
+        true,
+        isTurnOpen,
+      );
       return;
     }
 
@@ -1053,13 +1157,10 @@ export function projectTimelineRows(
     const counts = summarizeWorkItems(workItems);
 
     if (!hasWorkCounts(counts)) {
-      pushWithToolGrouping(segment.body, questionText, true);
+      pushWithToolGrouping(segment.body, questionText, finalActionableAssistantId, true);
       return;
     }
 
-    // If `autoExpandReasoning` is enabled in Paseo Settings, thoughts stay visible above/inside
-    // unless folded; however in Paseo's `collapseTurns`, `turn_summary` summarizes the whole turn's
-    // pre-final steps while still honoring `autoExpandReasoning` when the turn is expanded!
     const hostId = segment.userItem?.id ?? prefix[0].id;
     const summaryId = `turn-summary:${hostId}`;
     const expanded = options.expandedGroupIds.has(summaryId);
@@ -1068,8 +1169,6 @@ export function projectTimelineRows(
         entry.kind === "thought" || entry.kind === "tool_call" || entry.kind === "assistant_message",
     );
 
-    // If user enabled `autoExpandReasoning`, surface thoughts expanded above the folded tool summary
-    // when `!expanded`, or show everything in order when `expanded`!
     if (options.autoExpandReasoning && !expanded) {
       const standaloneThoughts = prefix.filter(
         (entry): entry is SidechatThoughtItem => entry.kind === "thought",
@@ -1078,7 +1177,15 @@ export function projectTimelineRows(
         (entry): entry is SidechatToolCallItem => entry.kind === "tool_call",
       );
       for (const thought of standaloneThoughts) {
-        rows.push(projectSingleWorkOrAssistant(thought, options, questionText, false));
+        rows.push(
+          projectSingleWorkOrAssistant(
+            thought,
+            options,
+            questionText,
+            finalActionableAssistantId,
+            false,
+          ),
+        );
       }
       if (nonThoughtWork.length > 0) {
         const toolOnlyCounts = summarizeWorkItems(nonThoughtWork);
@@ -1105,7 +1212,15 @@ export function projectTimelineRows(
       if (expanded) {
         for (const entry of prefix) {
           if (entry.kind === "thought" || entry.kind === "tool_call" || entry.kind === "assistant_message") {
-            rows.push(projectSingleWorkOrAssistant(entry, options, questionText, true));
+            rows.push(
+              projectSingleWorkOrAssistant(
+                entry,
+                options,
+                questionText,
+                finalActionableAssistantId,
+                true,
+              ),
+            );
           } else if (entry.kind === "todo_list") {
             rows.push({ kind: "todo_list", id: entry.id, item: entry });
           } else if (entry.kind === "notification") {
@@ -1117,7 +1232,6 @@ export function projectTimelineRows(
       }
     }
 
-    // Always keep any error/notification/compaction from prefix visible even when collapsed.
     if (!expanded) {
       for (const entry of prefix) {
         if (entry.kind === "notification" && entry.level === "error") {
@@ -1126,7 +1240,7 @@ export function projectTimelineRows(
       }
     }
 
-    pushWithToolGrouping(tail, questionText, true);
+    pushWithToolGrouping(tail, questionText, finalActionableAssistantId, true);
   });
 
   return rows;
