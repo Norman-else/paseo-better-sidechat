@@ -319,9 +319,15 @@ export default function contribute(server: PluginServerContext) {
     const title = deriveThreadTitle(input.prompt, "Sidechat");
     const now = new Date().toISOString();
 
-    const createAgentWithOptions = (includeUserOptions: boolean) => {
+    const createAgentWithOptions = async (includeUserOptions: boolean) => {
       const mergedOptions: Record<string, unknown> = {};
-      if (prefs.fastStartup && provider === "claude") {
+      if (parentAgent?.provider === provider && parentAgent.options) {
+        for (const [k, v] of Object.entries(parentAgent.options)) {
+          if (k === "extraArgs") continue;
+          if (v !== undefined) mergedOptions[k] = v;
+        }
+      }
+      if (prefs.skipExternalMcp && provider === "claude") {
         mergedOptions.extraArgs = { "strict-mcp-config": null };
       }
       if (includeUserOptions) {
@@ -330,13 +336,12 @@ export default function contribute(server: PluginServerContext) {
             if (v !== undefined) mergedOptions[k] = v;
           }
         }
-        if (input.fastMode && provider === "claude") {
-          mergedOptions.fast_mode = true;
+        if (input.fastMode !== undefined && provider === "claude") {
+          mergedOptions.fast_mode = input.fastMode;
         }
       }
 
-      return paseo.agents.create({
-        cwd: effectiveCwd,
+      const sharedCreatePayload = {
         background: true,
         ...(input.parentAgentId ? { parent: input.parentAgentId } : {}),
         title,
@@ -357,7 +362,7 @@ export default function contribute(server: PluginServerContext) {
           provider: providerModel,
           ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
           ...(resolvedThinkingId ? { thinkingOptionId: resolvedThinkingId } : {}),
-          ...(prefs.fastStartup && provider === "claude" ? { mcpServers: {} } : {}),
+          ...(prefs.skipExternalMcp && provider === "claude" ? { mcpServers: {} } : {}),
           ...(Object.keys(mergedOptions).length > 0 ? { options: mergedOptions } : {}),
           systemPrompt: prefs.readOnlyGuard
             ? SIDECHAT_READONLY_SYSTEM_PROMPT
@@ -367,6 +372,21 @@ export default function contribute(server: PluginServerContext) {
         ...(!input.deferInitialSend && input.clientMessageId
           ? { clientMessageId: input.clientMessageId }
           : {}),
+      };
+
+      // Create inside the same Paseo workspace so workspace-level MCP servers, skills, and env
+      // match the main conversation 1:1; fall back to `paseo.agents.create({ cwd })` if needed.
+      if (input.workspaceId && !parentAgent?.cwd) {
+        try {
+          return await paseo.workspaces.ref(input.workspaceId).agents.create(sharedCreatePayload);
+        } catch {
+          // Fall back to explicit `cwd` creation below.
+        }
+      }
+
+      return paseo.agents.create({
+        cwd: effectiveCwd,
+        ...sharedCreatePayload,
       });
     };
 

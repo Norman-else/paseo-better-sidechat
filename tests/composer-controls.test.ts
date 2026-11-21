@@ -117,21 +117,34 @@ test("resolveEffectiveProviderMode maps permission preferences safely across Cla
   );
 });
 
-test("sidechatSettings v2 migration preserves user preferences while upgrading defaultClaudeMode", () => {
-  const migrated = sidechatSettings.migrate?.(
+test("sidechatSettings v3 migration preserves full main-session MCP tools and permission inheritance", () => {
+  const fromV1Default = sidechatSettings.migrate?.(
     {
-      defaultContextMode: "always",
-      contextTurns: 10,
-      defaultClaudeMode: "plan",
-      preferClaudeProvider: true,
-      readOnlyGuard: false,
+      defaultContextMode: "first_turn",
+      contextTurns: 6,
+      defaultClaudeMode: "auto",
+      fastStartup: true,
     },
     1,
   ) as Record<string, unknown>;
-  assert.equal(migrated.defaultPermissionMode, "plan");
-  assert.equal(migrated.inheritMainModel, true);
-  assert.equal(migrated.defaultContextMode, "always");
-  assert.equal(migrated.readOnlyGuard, false);
+  assert.equal(fromV1Default.defaultPermissionMode, "inherit");
+  assert.equal(fromV1Default.skipExternalMcp, false);
+  assert.equal(fromV1Default.inheritMainModel, true);
+
+  const fromV2ExplicitPlan = sidechatSettings.migrate?.(
+    {
+      defaultContextMode: "always",
+      contextTurns: 10,
+      defaultPermissionMode: "plan",
+      fastStartup: true,
+      readOnlyGuard: false,
+    },
+    2,
+  ) as Record<string, unknown>;
+  assert.equal(fromV2ExplicitPlan.defaultPermissionMode, "plan");
+  assert.equal(fromV2ExplicitPlan.skipExternalMcp, false);
+  assert.equal(fromV2ExplicitPlan.defaultContextMode, "always");
+  assert.equal(fromV2ExplicitPlan.readOnlyGuard, false);
 });
 
 test("formatShortThinkingLabel and mode helpers match Paseo composer toolbar labels & icons", () => {

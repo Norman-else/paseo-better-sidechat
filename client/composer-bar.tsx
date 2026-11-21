@@ -32,6 +32,19 @@ import {
   pointerCursorStyle,
 } from "./web";
 
+function normalizeLucideIconName(raw: string | undefined, fallback: string): string {
+  if (!raw || !raw.trim()) return fallback;
+  const trimmed = raw.trim();
+  if (/^[A-Z]/.test(trimmed) && !trimmed.includes("-") && !trimmed.includes("_")) {
+    return trimmed;
+  }
+  return trimmed
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join("");
+}
+
 type TranslateFn = ReturnType<typeof useMessages>["t"];
 
 export interface SidechatComposerBarProps {
@@ -654,7 +667,10 @@ export function SidechatComposerBar({
                 const rawVal = effectiveOptions[ctrl.key];
                 const checked =
                   typeof rawVal === "boolean" ? rawVal : Boolean(ctrl.defaultValue);
-                const iconName = ctrl.icon || (ctrl.key === "fast_mode" ? "Zap" : "SlidersHorizontal");
+                const iconName = normalizeLucideIconName(
+                  ctrl.icon,
+                  ctrl.key === "fast_mode" ? "Zap" : "SlidersHorizontal",
+                );
                 return (
                   <Pressable
                     key={ctrl.key}
@@ -738,7 +754,7 @@ export function SidechatComposerBar({
                       ]}
                     >
                       <Icon
-                        name={ctrl.icon || "SlidersHorizontal"}
+                        name={normalizeLucideIconName(ctrl.icon, "SlidersHorizontal")}
                         size={glyphSize}
                         color={isOpen ? colors.foreground : colors.foregroundMuted}
                       />

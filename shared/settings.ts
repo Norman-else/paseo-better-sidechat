@@ -19,7 +19,7 @@ export const sidechatSettingsSchema = z.object({
   defaultPermissionMode: defaultPermissionModeSchema.default("inherit"),
   inheritMainModel: z.boolean().default(true),
   readOnlyGuard: z.boolean().default(true),
-  fastStartup: z.boolean().default(true),
+  skipExternalMcp: z.boolean().default(false),
   showComposerPill: z.boolean().default(true),
 });
 
@@ -31,32 +31,41 @@ export const DEFAULT_SIDECHAT_SETTINGS: SidechatSettingsValues = {
   defaultPermissionMode: "inherit",
   inheritMainModel: true,
   readOnlyGuard: true,
-  fastStartup: true,
+  skipExternalMcp: false,
   showComposerPill: true,
 };
 
 export const sidechatSettings = defineSettings({
   id: "preferences",
   scope: "host",
-  version: 2,
+  version: 3,
   schema: sidechatSettingsSchema,
-  migrate(raw) {
+  migrate(raw, fromVersion) {
     const prev = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-    const legacyMode =
+    const rawMode =
       typeof prev.defaultPermissionMode === "string"
         ? prev.defaultPermissionMode
         : typeof prev.defaultClaudeMode === "string"
           ? prev.defaultClaudeMode
           : "inherit";
-    const parsedMode = defaultPermissionModeSchema.safeParse(legacyMode);
+    const parsedMode = defaultPermissionModeSchema.safeParse(rawMode);
+    // In v1, `defaultClaudeMode` defaulted to `"auto"` rather than `"inherit"`; upgrade `"auto"` from v1 to `"inherit"` so Sidechat matches the main session's permission mode & tool access.
+    const migratedMode =
+      fromVersion < 2 && parsedMode.data === "auto"
+        ? "inherit"
+        : parsedMode.success
+          ? parsedMode.data
+          : "inherit";
+
     return {
       defaultContextMode: prev.defaultContextMode ?? "first_turn",
       contextTurns: prev.contextTurns ?? 6,
-      defaultPermissionMode: parsedMode.success ? parsedMode.data : "inherit",
+      defaultPermissionMode: migratedMode,
       inheritMainModel:
         typeof prev.inheritMainModel === "boolean" ? prev.inheritMainModel : true,
       readOnlyGuard: typeof prev.readOnlyGuard === "boolean" ? prev.readOnlyGuard : true,
-      fastStartup: typeof prev.fastStartup === "boolean" ? prev.fastStartup : true,
+      skipExternalMcp:
+        typeof prev.skipExternalMcp === "boolean" ? prev.skipExternalMcp : false,
       showComposerPill:
         typeof prev.showComposerPill === "boolean" ? prev.showComposerPill : true,
     };

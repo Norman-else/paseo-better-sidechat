@@ -194,9 +194,9 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
           <SettingsSwitch
             label={t("settingFastStartupLabel")}
             hint={t("settingFastStartupHint")}
-            value={values.fastStartup}
+            value={values.skipExternalMcp}
             disabled={disabled}
-            onValueChange={(fastStartup) => update({ fastStartup })}
+            onValueChange={(skipExternalMcp) => update({ skipExternalMcp })}
           />
 
           <SettingsSwitch

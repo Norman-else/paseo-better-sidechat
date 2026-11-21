@@ -155,9 +155,9 @@ export const en = {
   settingInheritModelLabel: "Inherit main session provider & model",
   settingInheritModelHint:
     "Automatically match your active main session's provider (Claude, Codex, Copilot, OpenCode, Kimi, etc.), model, and thinking level",
-  settingFastStartupLabel: "Fast startup (skip external MCP cold start)",
+  settingFastStartupLabel: "Skip external MCP servers (lightweight mode)",
   settingFastStartupHint:
-    "Avoids 15–30s cold-start delays from external MCP servers when opening new Claude sidechat threads",
+    "Off by default so Sidechat shares all MCP tools (Slack, Jira, DBs, etc.) with your main session; turn on only if slow MCP servers delay startup",
   settingComposerPillLabel: "Show Sidechat button in main composer",
   settingComposerPillHint: "Adds a one-click Sidechat pill to active main sessions",
   resetDefaultsLabel: "Reset defaults",
@@ -313,8 +313,8 @@ export const zh: LocaleTable = {
   settingReadOnlyGuardHint: "默认约束侧边 AI 只读取和检索代码、不擅自修改工作区文件，避免与主会话冲突",
   settingInheritModelLabel: "默认跟随主会话模型与服务商",
   settingInheritModelHint: "新建侧边对话时自动继承当前主会话正在使用的模型服务商（Claude、Codex、Copilot、OpenCode、Kimi 等）与思考强度",
-  settingFastStartupLabel: "极速冷启动（跳过外部 MCP 阻塞）",
-  settingFastStartupHint: "新建 Claude 侧边对话时跳过外部 MCP 握手等待，将首条消息响应前的延迟缩短至约 1–2 秒",
+  settingFastStartupLabel: "跳过外部 MCP 服务（轻量无工具模式）",
+  settingFastStartupHint: "默认关闭，完整保留与主会话一致的全部 MCP 工具（如 Slack、Jira、数据库等）与 Skills；仅在外部 MCP 过慢时按需开启",
   settingComposerPillLabel: "在主输入框显示「侧边聊天」快捷按钮",
   settingComposerPillHint: "在活跃的主会话底部输入栏显示一键打开侧边聊天入口",
   resetDefaultsLabel: "恢复默认设置",
