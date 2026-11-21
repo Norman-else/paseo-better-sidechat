@@ -135,6 +135,13 @@ export const en = {
   uploadingFile: "Uploading {{name}}…",
   removeAttachment: "Remove {{name}}",
   fileTooLarge: "{{name}} exceeds 50 MB limit",
+  composerInputPlaceholder: "Message the agent, tag @files, or use /commands and /skills",
+  composerInputPlaceholderCompact: "Message, @files, /commands",
+  skillTag: "Skill",
+  clientCmdClearDesc: "Start a fresh sidechat thread",
+  clientCmdArchiveDesc: "Archive the current sidechat thread",
+  searchingWorkspaceFiles: "Searching workspace…",
+  loadingSlashCommands: "Loading commands and skills…",
 
   // Settings Screen
   settingsHostSyncSection: "Synced Paseo Host Settings",
@@ -320,6 +327,13 @@ export const zh: LocaleTable = {
   uploadingFile: "正在上传 {{name}}…",
   removeAttachment: "移除 {{name}}",
   fileTooLarge: "{{name}} 超过 50 MB 大小限制",
+  composerInputPlaceholder: "给 Agent 发消息，标记 @files，或使用 /commands 和 /skills",
+  composerInputPlaceholderCompact: "发消息，@files，/commands",
+  skillTag: "Skill",
+  clientCmdClearDesc: "新建一个空白侧边对话",
+  clientCmdArchiveDesc: "归档当前侧边对话",
+  searchingWorkspaceFiles: "正在搜索工作区文件…",
+  loadingSlashCommands: "正在加载命令与 Skills…",
 
   // Settings Screen
   settingsHostSyncSection: "已自动同步的 Paseo 设置",

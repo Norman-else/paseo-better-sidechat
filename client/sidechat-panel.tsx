@@ -49,6 +49,10 @@ import {
   type SidechatComposerAttachment,
   type SidechatWireAgentAttachment,
 } from "../shared/attachments";
+import {
+  resolveImmediateClientSlashCommand,
+  type ClientSlashCommandAction,
+} from "../shared/autocomplete";
 import { deriveSidechatPalette } from "../shared/appearance";
 import {
   formatProviderLabel,
@@ -792,6 +796,29 @@ function SidechatSurface({
 
       const targetSideAgentId = options?.forceNewThread ? null : latestTabStateRef.current.sideAgentId;
 
+      const immediateClientCmd = resolveImmediateClientSlashCommand({
+        text: trimmed,
+        hasAttachments: activeAttachments.length > 0,
+        hasActiveThread: Boolean(targetSideAgentId),
+      });
+      if (immediateClientCmd && targetSideAgentId) {
+        patchTabState({ draft: "" });
+        if (immediateClientCmd.action === "new-thread") {
+          patchTabState({ sideAgentId: null, contextOverride: null, draft: "" });
+          setTimelineState(createEmptyTimelineState());
+        } else {
+          const nextThread = threads.find((item) => item.agentId !== targetSideAgentId) ?? null;
+          patchTabState({ sideAgentId: nextThread?.agentId ?? null, draft: "" });
+          await callUpdateThread({
+            agentId: targetSideAgentId,
+            workspaceId,
+            action: "archive",
+          }).catch(() => {});
+          void queryClient.invalidateQueries({ queryKey: threadsQueryKey });
+        }
+        return;
+      }
+
       if (!targetSideAgentId) {
         setTurnStartedAtMs(Date.now());
         setCreatingThread(true);
@@ -924,6 +951,7 @@ function SidechatSurface({
       paseo,
       patchTabState,
       queryClient,
+      threads,
       threadsQueryKey,
       toast,
     ],
@@ -1027,6 +1055,18 @@ function SidechatSurface({
     }).catch(() => {});
     void queryClient.invalidateQueries({ queryKey: threadsQueryKey });
   }, [activeSideAgentId, threads, patchTabState, callUpdateThread, workspaceId, queryClient, threadsQueryKey]);
+
+  const handleClientSlashCommand = useCallback(
+    (action: ClientSlashCommandAction) => {
+      if (action === "new-thread") {
+        patchTabState({ sideAgentId: null, contextOverride: null, draft: "" });
+        setTimelineState(createEmptyTimelineState());
+        return;
+      }
+      void handleArchiveActiveThread();
+    },
+    [patchTabState, handleArchiveActiveThread],
+  );
 
   const handleScroll = useCallback((ev: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = ev.nativeEvent;
@@ -1696,6 +1736,7 @@ function SidechatSurface({
         hostId={host.id}
         cwd={effectiveCwd}
         activeSideAgentId={activeSideAgentId}
+        mainAgentId={mainAgentId}
         locale={locale}
         theme={theme}
         palette={palette}
@@ -1713,6 +1754,7 @@ function SidechatSurface({
         onStop={() => {
           void handleStopTurn();
         }}
+        onClientCommand={handleClientSlashCommand}
         isBusy={isBusy}
         canSubmit={Boolean(
           (tabState.draft.trim() || composerAttachments.length > 0) &&
@@ -1745,6 +1787,8 @@ function SidechatSurface({
         }}
         onClearQuote={() => setAttachedQuote(null)}
         effectiveProvider={effectiveProvider}
+        effectiveModelId={effectiveModelId}
+        effectiveThinkingId={effectiveThinkingId}
         providerIconSvg={currentProviderEntry?.iconSvg ?? null}
         selectedModelRawLabel={selectedModelLabel}
         modelMaxTokens={currentModelDef?.contextWindowMaxTokens ?? null}

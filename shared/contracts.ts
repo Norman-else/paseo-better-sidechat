@@ -5,6 +5,7 @@ import {
   forgeSearchItemSchema,
   uploadedFileAttachmentSchema,
 } from "./attachments";
+import { slashCommandItemSchema, workspaceFileEntrySchema } from "./autocomplete";
 import { sidechatSettingsSchema } from "./settings";
 
 export const preferencesRpc = defineRpc({
@@ -226,5 +227,34 @@ export const uploadFileRpc = defineRpc({
   }),
   output: z.object({
     attachment: uploadedFileAttachmentSchema,
+  }),
+});
+
+export const workspaceFilesRpc = defineRpc({
+  name: "sidechat.autocomplete.files",
+  input: z.object({
+    cwd: z.string().min(1),
+    query: z.string().default(""),
+    limit: z.number().int().min(1).max(100).default(40),
+  }),
+  output: z.object({
+    entries: z.array(workspaceFileEntrySchema),
+    error: z.string().nullable().optional(),
+  }),
+});
+
+export const slashCommandsRpc = defineRpc({
+  name: "sidechat.autocomplete.commands",
+  input: z.object({
+    cwd: z.string().min(1),
+    provider: z.string().min(1),
+    model: z.string().nullable().optional(),
+    modeId: z.string().nullable().optional(),
+    thinkingOptionId: z.string().nullable().optional(),
+    sideAgentId: z.string().nullable().optional(),
+    mainAgentId: z.string().nullable().optional(),
+  }),
+  output: z.object({
+    commands: z.array(slashCommandItemSchema),
   }),
 });

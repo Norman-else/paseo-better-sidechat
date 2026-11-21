@@ -24,6 +24,15 @@ import {
   type SidechatComposerAttachment,
 } from "../shared/attachments";
 import {
+  applyFileMentionReplacement,
+  applySlashCommandReplacement,
+  findActiveFileMention,
+  findActiveSlashCommand,
+  rankSlashAutocompleteEntries,
+  SIDECHAT_CLIENT_COMMANDS,
+  type ClientSlashCommandAction,
+} from "../shared/autocomplete";
+import {
   formatShortModelLabel,
   formatShortModeLabel,
   formatShortThinkingLabel,
@@ -36,12 +45,18 @@ import {
   forgeSearchRpc,
   listAttachmentSourcesRpc,
   searchAttachmentSourceRpc,
+  slashCommandsRpc,
   uploadFileRpc,
+  workspaceFilesRpc,
 } from "../shared/contracts";
 import {
   AttachmentPickerPopover,
   type SearchableAttachmentOption,
 } from "./attachment-picker-popover";
+import {
+  ComposerAutocompletePopover,
+  type ComposerAutocompleteOption,
+} from "./composer-autocomplete-popover";
 import { ContextWindowPopover } from "./context-window-popover";
 import type { useMessages } from "./messages";
 import { type MenuOption, PopoverMenu } from "./popover-menu";
@@ -80,6 +95,7 @@ export interface SidechatComposerBarProps {
   hostId: string;
   cwd: string;
   activeSideAgentId: string | null;
+  mainAgentId: string | null;
   locale: string;
   theme: PluginTheme;
   palette: DerivedPalette;
@@ -92,6 +108,7 @@ export interface SidechatComposerBarProps {
   onChangeDraft(text: string): void;
   onSubmit(): void;
   onStop(): void;
+  onClientCommand(action: ClientSlashCommandAction): void;
   isBusy: boolean;
   canSubmit: boolean;
   shortcutLabel: string;
@@ -114,6 +131,8 @@ export interface SidechatComposerBarProps {
 
   // Universal Multi-Provider Agent Controls
   effectiveProvider: string;
+  effectiveModelId: string | null;
+  effectiveThinkingId: string | null;
   providerIconSvg: string | null;
   selectedModelRawLabel: string | null;
   modelMaxTokens: number | null;
@@ -134,6 +153,7 @@ export function SidechatComposerBar({
   hostId,
   cwd,
   activeSideAgentId,
+  mainAgentId,
   locale,
   theme,
   palette,
@@ -145,9 +165,10 @@ export function SidechatComposerBar({
   onChangeDraft,
   onSubmit,
   onStop,
+  onClientCommand,
   isBusy,
   canSubmit,
-  shortcutLabel,
+  shortcutLabel: _shortcutLabel,
   attachments,
   onChangeAttachments,
   onUploadingCountChange,
@@ -161,6 +182,8 @@ export function SidechatComposerBar({
   onAttachCandidateSelection,
   onClearQuote,
   effectiveProvider,
+  effectiveModelId,
+  effectiveThinkingId,
   providerIconSvg,
   selectedModelRawLabel,
   modelMaxTokens,
@@ -184,8 +207,14 @@ export function SidechatComposerBar({
   const callListSources = useRpc(listAttachmentSourcesRpc);
   const callSearchSource = useRpc(searchAttachmentSourceRpc);
   const callUploadFile = useRpc(uploadFileRpc);
+  const callWorkspaceFiles = useRpc(workspaceFilesRpc);
+  const callSlashCommands = useRpc(slashCommandsRpc);
 
   const [inputFocused, setInputFocused] = useState(false);
+  const [cursorIndex, setCursorIndex] = useState(() => draft.length);
+  const [dismissedTriggerKey, setDismissedTriggerKey] = useState<string | null>(null);
+  const [selectedAcIndex, setSelectedAcIndex] = useState(0);
+  const [debouncedFileQuery, setDebouncedFileQuery] = useState("");
   const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [activePicker, setActivePicker] = useState<ActiveAttachmentPickerState>(null);
   const [pickerQuery, setPickerQuery] = useState("");
@@ -503,9 +532,186 @@ export function SidechatComposerBar({
     [attachments, onChangeAttachments],
   );
 
+  // --- Paseo `@files`, `/commands`, and `/skills` Autocomplete ---
+  const clampedCursor = Math.max(0, Math.min(cursorIndex, draft.length));
+  const activeFileMention = useMemo(
+    () => findActiveFileMention({ text: draft, cursorIndex: clampedCursor }),
+    [draft, clampedCursor],
+  );
+  const activeSlashCommand = useMemo(
+    () =>
+      activeFileMention
+        ? null
+        : findActiveSlashCommand({ text: draft, cursorIndex: clampedCursor }),
+    [activeFileMention, draft, clampedCursor],
+  );
+
+  const rawTriggerKey = activeFileMention
+    ? `file:${activeFileMention.start}:${activeFileMention.query}`
+    : activeSlashCommand
+      ? `cmd:${activeSlashCommand.start}:${activeSlashCommand.query}`
+      : null;
+
+  useEffect(() => {
+    setSelectedAcIndex(0);
+  }, [rawTriggerKey]);
+
+  const fileQueryRaw = activeFileMention?.query ?? "";
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedFileQuery(fileQueryRaw);
+    }, fileQueryRaw ? 120 : 0);
+    return () => clearTimeout(timer);
+  }, [fileQueryRaw]);
+
+  const isAutocompleteOpen = Boolean(rawTriggerKey && rawTriggerKey !== dismissedTriggerKey);
+
+  const workspaceFilesQuery = useQuery({
+    queryKey: ["sidechat-ac-files", hostId, cwd, debouncedFileQuery],
+    enabled: Boolean(activeFileMention && isAutocompleteOpen && cwd),
+    staleTime: 15_000,
+    queryFn: () => callWorkspaceFiles({ cwd, query: debouncedFileQuery, limit: 40 }),
+  });
+
+  const slashCommandsQuery = useQuery({
+    queryKey: [
+      "sidechat-ac-commands",
+      hostId,
+      cwd,
+      effectiveProvider,
+      activeSideAgentId ?? "",
+      mainAgentId ?? "",
+    ],
+    enabled: Boolean(cwd && effectiveProvider),
+    staleTime: 30_000,
+    queryFn: () =>
+      callSlashCommands({
+        cwd,
+        provider: effectiveProvider,
+        model: effectiveModelId,
+        modeId: effectiveModeId,
+        thinkingOptionId: effectiveThinkingId,
+        sideAgentId: activeSideAgentId,
+        mainAgentId,
+      }),
+  });
+
+  const autocompleteOptions = useMemo<ComposerAutocompleteOption[]>(() => {
+    if (!isAutocompleteOpen) return [];
+
+    if (activeFileMention) {
+      const entries = workspaceFilesQuery.data?.entries ?? [];
+      return entries.map((entry) => ({
+        id: `${entry.kind}:${entry.path}`,
+        label: entry.path,
+        iconName: entry.kind === "directory" ? "Folder" : "File",
+        onSelect: () => {
+          const applied = applyFileMentionReplacement({
+            text: draft,
+            mention: activeFileMention,
+            relativePath: entry.path,
+          });
+          setCursorIndex(applied.cursorIndex);
+          onChangeDraft(applied.text);
+        },
+      }));
+    }
+
+    if (activeSlashCommand) {
+      const clientDefs =
+        activeSideAgentId && attachments.length === 0
+          ? SIDECHAT_CLIENT_COMMANDS.map((def) => ({
+              def,
+              description:
+                def.action === "new-thread"
+                  ? t("clientCmdClearDesc")
+                  : t("clientCmdArchiveDesc"),
+            }))
+          : [];
+
+      const ranked = rankSlashAutocompleteEntries({
+        providerCommands: slashCommandsQuery.data?.commands ?? [],
+        clientCommands: clientDefs,
+        query: activeSlashCommand.query,
+        position: activeSlashCommand.position,
+        limit: 60,
+      });
+
+      return ranked.map((entry) => {
+        if (entry.source === "client") {
+          return {
+            id: `client:${entry.name}`,
+            label: `/${entry.name}`,
+            description: entry.description,
+            tag: "Sidechat",
+            iconName: entry.icon,
+            onSelect: () => {
+              setCursorIndex(0);
+              onChangeDraft("");
+              onClientCommand(entry.action);
+            },
+          };
+        }
+
+        const isSkill = entry.kind === "skill";
+        return {
+          id: `provider:${entry.name}`,
+          label: `/${entry.name}`,
+          argumentHint: entry.argumentHint || undefined,
+          description: entry.description || undefined,
+          tag: isSkill ? t("skillTag") : undefined,
+          iconName: isSkill ? "Sparkles" : "SquareSlash",
+          onSelect: () => {
+            const applied = applySlashCommandReplacement({
+              text: draft,
+              command: activeSlashCommand,
+              commandName: entry.name,
+            });
+            setCursorIndex(applied.cursorIndex);
+            onChangeDraft(applied.text);
+          },
+        };
+      });
+    }
+
+    return [];
+  }, [
+    isAutocompleteOpen,
+    activeFileMention,
+    activeSlashCommand,
+    workspaceFilesQuery.data?.entries,
+    slashCommandsQuery.data?.commands,
+    activeSideAgentId,
+    attachments.length,
+    draft,
+    onChangeDraft,
+    onClientCommand,
+    t,
+  ]);
+
+  // For inline `/` when user typed `/` inside a sentence (`http://...` or `a / b`), only show popover if matching skills exist or loading
+  const showAutocompletePopover =
+    isAutocompleteOpen &&
+    !(
+      activeSlashCommand?.position === "inline" &&
+      !slashCommandsQuery.isLoading &&
+      autocompleteOptions.length === 0
+    );
+
+  const safeSelectedAcIndex =
+    autocompleteOptions.length > 0
+      ? ((selectedAcIndex % autocompleteOptions.length) + autocompleteOptions.length) %
+        autocompleteOptions.length
+      : 0;
+
+  const placeholderText = compact
+    ? t("composerInputPlaceholderCompact")
+    : t("composerInputPlaceholder");
+
   return (
     <View
       style={{
+        position: "relative",
         paddingHorizontal: 12,
         paddingBottom: 12,
         paddingTop: 4,
@@ -513,6 +719,21 @@ export function SidechatComposerBar({
         zIndex: 20,
       }}
     >
+      <ComposerAutocompletePopover
+        visible={showAutocompletePopover}
+        options={autocompleteOptions}
+        selectedIndex={safeSelectedAcIndex}
+        isLoading={
+          activeFileMention ? workspaceFilesQuery.isFetching : slashCommandsQuery.isLoading
+        }
+        loadingLabel={
+          activeFileMention ? t("searchingWorkspaceFiles") : t("loadingSlashCommands")
+        }
+        emptyLabel={t("pickerNoResults")}
+        theme={theme}
+        isTouch={isTouch}
+        uiFontSize={appearance.uiBaseFontSize}
+      />
       <View
         style={{
           borderRadius: 16,
@@ -846,15 +1067,49 @@ export function SidechatComposerBar({
         <TextInput
           multiline
           value={draft}
-          onChangeText={onChangeDraft}
+          onChangeText={(nextText) => {
+            setDismissedTriggerKey(null);
+            setCursorIndex((prev) => {
+              const delta = nextText.length - draft.length;
+              if (delta > 0 && prev === draft.length) return nextText.length;
+              return Math.max(0, Math.min(nextText.length, prev + delta));
+            });
+            onChangeDraft(nextText);
+          }}
+          onSelectionChange={(e) => {
+            const start = e.nativeEvent?.selection?.start;
+            if (typeof start === "number") {
+              setCursorIndex(start);
+            }
+          }}
           onFocus={() => setInputFocused(true)}
           onBlur={() => setInputFocused(false)}
-          placeholder={t("composerPlaceholder", { shortcut: shortcutLabel })}
+          placeholder={placeholderText}
           placeholderTextColor={colors.foregroundMuted}
-          accessibilityLabel={t("composerPlaceholder", { shortcut: shortcutLabel })}
-          {...composerWebKeyProps(appearance.sendShortcut, () => {
-            if (canSubmit) onSubmit();
-          })}
+          accessibilityLabel={placeholderText}
+          {...composerWebKeyProps(
+            appearance.sendShortcut,
+            () => {
+              if (canSubmit) onSubmit();
+            },
+            {
+              isOpen: showAutocompletePopover,
+              hasOptions: autocompleteOptions.length > 0,
+              onMove: (delta) => {
+                setSelectedAcIndex((prev) => {
+                  const len = autocompleteOptions.length;
+                  if (len === 0) return 0;
+                  return (((prev + delta) % len) + len) % len;
+                });
+              },
+              onConfirm: () => {
+                autocompleteOptions[safeSelectedAcIndex]?.onSelect();
+              },
+              onDismiss: () => {
+                if (rawTriggerKey) setDismissedTriggerKey(rawTriggerKey);
+              },
+            },
+          )}
           {...composerPasteImageProps(handleAddPickedImages)}
           style={[
             {

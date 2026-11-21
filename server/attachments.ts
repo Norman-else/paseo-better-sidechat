@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import vm from "node:vm";
+import type { PaseoApi } from "@getpaseo/client";
 import { createHostClient } from "@getpaseo/client/node";
 import {
   findSvgIconProblem,
@@ -20,6 +21,7 @@ import {
   type ForgeSearchItem,
   type UploadedFileAttachmentData,
 } from "../shared/attachments";
+import type { SlashCommandItem, WorkspaceFileEntry } from "../shared/autocomplete";
 
 type HostClientInstance = ReturnType<typeof createHostClient>;
 
@@ -315,6 +317,10 @@ export class SidechatAttachmentService {
   private readonly bundleCache = new Map<
     string,
     { hash: string; sources: RawExtractedSource[] }
+  >();
+  private readonly commandsCache = new Map<
+    string,
+    { atMs: number; items: SlashCommandItem[] }
   >();
 
   constructor(private readonly resolvePaseoBin: () => string) {}
@@ -757,6 +763,191 @@ export class SidechatAttachmentService {
     };
   }
 
+  async searchWorkspaceFiles(input: {
+    cwd: string;
+    query: string;
+    limit?: number;
+  }): Promise<{ entries: WorkspaceFileEntry[]; error: string | null }> {
+    const limit = input.limit ?? 40;
+    const client = await this.getConnectedHostClient();
+    if (client) {
+      try {
+        const res = await client.getDirectorySuggestions({
+          cwd: input.cwd,
+          query: input.query,
+          includeFiles: true,
+          includeDirectories: true,
+          limit,
+          matchMode: "fuzzy",
+        });
+        if (!res.error) {
+          const entries: WorkspaceFileEntry[] =
+            Array.isArray(res.entries) && res.entries.length > 0
+              ? res.entries
+                  .filter(
+                    (e): e is { path: string; kind: "file" | "directory" } =>
+                      Boolean(e && typeof e.path === "string" && (e.kind === "file" || e.kind === "directory")),
+                  )
+                  .slice(0, limit)
+              : (res.directories ?? []).slice(0, limit).map((d) => ({ path: d, kind: "directory" as const }));
+          return { entries, error: null };
+        }
+      } catch {
+        // Fall through to git ls-files fallback
+      }
+    }
+
+    try {
+      const gitRes = await execCommand(
+        "git",
+        ["ls-files", "--cached", "--others", "--exclude-standard"],
+        { cwd: input.cwd, timeout: 5_000 },
+      );
+      const q = input.query.trim().toLowerCase();
+      const allPaths = gitRes.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const matched = q
+        ? allPaths.filter((p) => p.toLowerCase().includes(q))
+        : allPaths;
+      return {
+        entries: matched.slice(0, limit).map((path) => ({ path, kind: "file" })),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        entries: [],
+        error: error instanceof Error ? error.message : "Failed to search workspace files",
+      };
+    }
+  }
+
+  async listCommandsAndSkills(input: {
+    paseo: PaseoApi;
+    cwd: string;
+    provider: string;
+    model?: string | null;
+    modeId?: string | null;
+    thinkingOptionId?: string | null;
+    sideAgentId?: string | null;
+    mainAgentId?: string | null;
+  }): Promise<SlashCommandItem[]> {
+    const cacheKey = `${input.provider}:${input.cwd}:${input.sideAgentId ?? input.mainAgentId ?? "draft"}`;
+    const cached = this.commandsCache.get(cacheKey);
+    if (cached && Date.now() - cached.atMs < 25_000 && cached.items.length > 0) {
+      return cached.items;
+    }
+
+    const normalizeCommands = (
+      raw: ReadonlyArray<{
+        name: string;
+        description: string;
+        argumentHint: string;
+        kind?: "command" | "skill";
+      }>,
+    ): SlashCommandItem[] => {
+      const seen = new Set<string>();
+      const out: SlashCommandItem[] = [];
+      for (const item of raw) {
+        const name = item.name?.trim().replace(/^\/+/, "") ?? "";
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        out.push({
+          name,
+          description: item.description?.trim() ?? "",
+          argumentHint: item.argumentHint?.trim() ?? "",
+          kind: item.kind === "skill" ? "skill" : "command",
+        });
+      }
+      return out;
+    };
+
+    const tryAgentCommands = async (agentId: string): Promise<SlashCommandItem[]> => {
+      try {
+        const res = await input.paseo.agents.ref(agentId).commands();
+        if (!res.error && res.commands?.length > 0) {
+          return normalizeCommands(res.commands);
+        }
+      } catch {
+        // Ignore and try next source
+      }
+      return [];
+    };
+
+    // 1. Live sidechat agent commands & skills
+    if (input.sideAgentId) {
+      const fromSide = await tryAgentCommands(input.sideAgentId);
+      if (fromSide.length > 0) {
+        this.commandsCache.set(cacheKey, { atMs: Date.now(), items: fromSide });
+        return fromSide;
+      }
+    }
+
+    // 2. Active main session agent on the same provider (gives instant live skills/commands even on a new draft!)
+    if (input.mainAgentId) {
+      try {
+        const mainSnap = await input.paseo.agents.ref(input.mainAgentId).refresh();
+        if (mainSnap?.agent?.provider === input.provider) {
+          const fromMain = await tryAgentCommands(input.mainAgentId);
+          if (fromMain.length > 0) {
+            this.commandsCache.set(cacheKey, { atMs: Date.now(), items: fromMain });
+            return fromMain;
+          }
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    // 3. Any loaded unarchived agent on the host matching `input.provider`
+    try {
+      const recent = await input.paseo.agents.list();
+      const matchingEntry = recent.entries.find(
+        (entry) => !entry.agent.archivedAt && entry.agent.provider === input.provider,
+      );
+      if (matchingEntry) {
+        const fromPeer = await tryAgentCommands(matchingEntry.agent.id);
+        if (fromPeer.length > 0) {
+          this.commandsCache.set(cacheKey, { atMs: Date.now(), items: fromPeer });
+          return fromPeer;
+        }
+      }
+    } catch {
+      // Ignore
+    }
+
+    // 4. Draft listCommands via hostClient + local skill directories scan fallback
+    const client = await this.getConnectedHostClient();
+    if (client) {
+      try {
+        const draftRes = await client.listCommands({
+          agentId: "__draft__",
+          draftConfig: {
+            provider: input.provider,
+            cwd: input.cwd,
+            ...(input.model ? { model: input.model } : {}),
+            ...(input.modeId ? { modeId: input.modeId } : {}),
+            ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}),
+          },
+        });
+        if (!draftRes.error && draftRes.commands?.length > 0) {
+          const normalized = normalizeCommands(draftRes.commands);
+          this.commandsCache.set(cacheKey, { atMs: Date.now(), items: normalized });
+          return normalized;
+        }
+      } catch {
+        // Fall through to filesystem skill scan
+      }
+    }
+
+    const scanned = await scanFilesystemSkillsFallback(input.cwd);
+    if (scanned.length > 0) {
+      this.commandsCache.set(cacheKey, { atMs: Date.now(), items: scanned });
+    }
+    return scanned;
+  }
+
   async close(): Promise<void> {
     const current = this.hostClient;
     this.hostClient = null;
@@ -776,4 +967,44 @@ export function resolveDefaultPaseoCliBin(): string {
     if (existsSync(bin)) return bin;
   }
   return "paseo";
+}
+
+async function scanFilesystemSkillsFallback(cwd: string): Promise<SlashCommandItem[]> {
+  const home = homedir();
+  const skillRoots = [
+    join(cwd, ".claude", "skills"),
+    join(cwd, ".agents", "skills"),
+    join(home, ".claude", "skills"),
+    join(home, ".agents", "skills"),
+  ];
+  const seen = new Set<string>();
+  const items: SlashCommandItem[] = [];
+
+  for (const root of skillRoots) {
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const skillMd = join(root, entry.name, "SKILL.md");
+      const content = await readFile(skillMd, "utf8").catch(() => null);
+      if (!content) continue;
+      const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+      let name = entry.name;
+      let description = "";
+      if (fmMatch?.[1]) {
+        const nameLine = /^\s*name:\s*(.+)$/m.exec(fmMatch[1]);
+        const descLine = /^\s*description:\s*(.+)$/m.exec(fmMatch[1]);
+        if (nameLine?.[1]) name = nameLine[1].trim().replace(/^["']|["']$/g, "");
+        if (descLine?.[1]) description = descLine[1].trim().replace(/^["']|["']$/g, "");
+      }
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      items.push({
+        name,
+        description,
+        argumentHint: "",
+        kind: "skill",
+      });
+    }
+  }
+  return items.sort((a, b) => a.name.localeCompare(b.name));
 }

@@ -14,9 +14,11 @@ import {
   mainContextRpc,
   preferencesRpc,
   searchAttachmentSourceRpc,
+  slashCommandsRpc,
   updateThreadRpc,
   uploadFileRpc,
   usageReportsRpc,
+  workspaceFilesRpc,
   type SidechatThread,
   type UsageReportCardData,
 } from "./shared/contracts";
@@ -723,6 +725,23 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(uploadFileRpc, async ({ fileName, mimeType, dataBase64 }) => ({
     attachment: await attachmentService.uploadFile({ fileName, mimeType, dataBase64 }),
+  }));
+
+  server.handle(workspaceFilesRpc, async ({ cwd, query, limit }) =>
+    attachmentService.searchWorkspaceFiles({ cwd, query, limit }),
+  );
+
+  server.handle(slashCommandsRpc, async (input, { paseo }) => ({
+    commands: await attachmentService.listCommandsAndSkills({
+      paseo,
+      cwd: input.cwd,
+      provider: input.provider,
+      model: input.model,
+      modeId: input.modeId,
+      thinkingOptionId: input.thinkingOptionId,
+      sideAgentId: input.sideAgentId,
+      mainAgentId: input.mainAgentId,
+    }),
   }));
 
   server.addHook("workspace.archive.after", async ({ workspace }, { paseo }) => {

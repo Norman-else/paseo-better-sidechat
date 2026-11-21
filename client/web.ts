@@ -249,17 +249,60 @@ export function watchExternalSelection(
  * IME-safe Enter / Cmd+Enter key handler for React Native Web's multiline TextInput,
  * honoring Paseo's `sendShortcut` ("enter" vs "mod-enter").
  */
+export interface AutocompleteKeyboardHandlers {
+  isOpen: boolean;
+  hasOptions: boolean;
+  onMove(delta: -1 | 1): void;
+  onConfirm(): void;
+  onDismiss(): void;
+}
+
 export function composerWebKeyProps(
   sendShortcut: SendShortcutMode,
   onSubmit: () => void,
+  autocomplete?: AutocompleteKeyboardHandlers,
 ): Record<string, unknown> {
   if (Platform.OS !== "web") return {};
   return {
     onKeyPress: (syntheticEvent: { nativeEvent?: DomEvent; preventDefault?: () => void }) => {
       const ev = syntheticEvent.nativeEvent;
-      if (!ev || ev.key !== "Enter") return;
+      if (!ev || !ev.key) return;
       // Never intercept Chinese/Japanese/Korean IME composition!
       if (ev.isComposing || ev.keyCode === 229) return;
+
+      if (autocomplete?.isOpen) {
+        if (ev.key === "Escape") {
+          ev.preventDefault?.();
+          syntheticEvent.preventDefault?.();
+          autocomplete.onDismiss();
+          return;
+        }
+        if (autocomplete.hasOptions) {
+          if (ev.key === "ArrowDown") {
+            ev.preventDefault?.();
+            syntheticEvent.preventDefault?.();
+            autocomplete.onMove(1);
+            return;
+          }
+          if (ev.key === "ArrowUp") {
+            ev.preventDefault?.();
+            syntheticEvent.preventDefault?.();
+            autocomplete.onMove(-1);
+            return;
+          }
+          if (
+            ev.key === "Tab" ||
+            (ev.key === "Enter" && !ev.shiftKey && !ev.altKey && !ev.metaKey && !ev.ctrlKey)
+          ) {
+            ev.preventDefault?.();
+            syntheticEvent.preventDefault?.();
+            autocomplete.onConfirm();
+            return;
+          }
+        }
+      }
+
+      if (ev.key !== "Enter") return;
       if (sendShortcut === "mod-enter") {
         if (ev.metaKey || ev.ctrlKey) {
           ev.preventDefault?.();
