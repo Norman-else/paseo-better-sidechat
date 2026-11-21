@@ -37,6 +37,7 @@ import {
   DEFAULT_SIDECHAT_SETTINGS,
   sidechatSettings,
   type SidechatSettingsValues,
+  type StarterModelMode,
 } from "./shared/settings";
 import {
   buildAiStarterGenerationPrompt,
@@ -164,10 +165,11 @@ async function resolveProviderAndModel(input: {
   throw new Error("No available AI model provider found on this Paseo host.");
 }
 
-function pickFastStarterModel(input: {
+function pickStarterModel(input: {
   entries: ProviderSnapshotEntry[];
   preferredProvider?: string | null;
   preferredModel?: string | null;
+  starterModelMode: Exclude<StarterModelMode, "off">;
 }): {
   provider: string;
   model: string;
@@ -176,6 +178,8 @@ function pickFastStarterModel(input: {
   providerEntry: ProviderSnapshotEntry | null;
 } | null {
   const fastModelPattern = /\b(haiku|mini|nano|flash|fast|instant|small|lite)\b/i;
+  const sonnetPattern = /\bsonnet\b/i;
+  const opusPattern = /\bopus\b/i;
   const lowThinkingPattern = /^(off|none|disabled|minimal|low)$/i;
 
   const chooseFromEntry = (
@@ -185,14 +189,38 @@ function pickFastStarterModel(input: {
     const selectable = (entry.models ?? []).filter((m) => m.isSelectable !== false);
     if (selectable.length === 0 && !fallbackModelId) return null;
 
-    const fastMatch = selectable.find(
-      (m) => fastModelPattern.test(m.id) || fastModelPattern.test(m.label || ""),
-    );
     const preferredMatch = fallbackModelId
       ? selectable.find((m) => m.id === fallbackModelId)
       : undefined;
+    const sonnetMatch = selectable.find(
+      (m) => sonnetPattern.test(m.id) || sonnetPattern.test(m.label || ""),
+    );
+    const fastMatch = selectable.find(
+      (m) => fastModelPattern.test(m.id) || fastModelPattern.test(m.label || ""),
+    );
+    const nonTinyMatch = selectable.find(
+      (m) => !fastModelPattern.test(m.id) && !fastModelPattern.test(m.label || ""),
+    );
     const defaultMatch = selectable.find((m) => m.isDefault) ?? selectable[0];
-    const chosen = fastMatch ?? preferredMatch ?? defaultMatch;
+
+    let chosen = preferredMatch ?? defaultMatch;
+    if (input.starterModelMode === "fast") {
+      chosen = fastMatch ?? preferredMatch ?? defaultMatch;
+    } else if (input.starterModelMode === "smart") {
+      const preferredIsOpus =
+        Boolean(fallbackModelId && opusPattern.test(fallbackModelId)) ||
+        Boolean(preferredMatch && opusPattern.test(preferredMatch.label || ""));
+      if (entry.provider === "claude" && preferredIsOpus && sonnetMatch) {
+        // Sonnet dramatically outperforms Haiku on nuanced user-intent inference while remaining fast & lightweight.
+        chosen = sonnetMatch;
+      } else {
+        chosen = preferredMatch ?? sonnetMatch ?? nonTinyMatch ?? defaultMatch;
+      }
+    } else {
+      // `"inherit"`: strictly keep the main session's active model when available.
+      chosen = preferredMatch ?? defaultMatch;
+    }
+
     const modelId = chosen?.id ?? fallbackModelId;
     if (!modelId) return null;
 
@@ -394,14 +422,15 @@ export default function contribute(server: PluginServerContext) {
   const attachmentService = new SidechatAttachmentService(resolvePaseoCliBin);
   let cachedUsageAtMs = 0;
   let cachedUsageCards: UsageReportCardData[] | null = null;
-  const aiStarterCache = new Map<string, StarterPromptItem[]>();
-  const inFlightAiStarters = new Map<string, Promise<StarterPromptItem[] | null>>();
+  type CachedStarterResult = { starters: StarterPromptItem[]; modelId: string | null };
+  const aiStarterCache = new Map<string, CachedStarterResult>();
+  const inFlightAiStarters = new Map<string, Promise<CachedStarterResult | null>>();
 
-  const rememberAiStarters = (key: string, items: StarterPromptItem[]) => {
+  const rememberAiStarters = (key: string, result: CachedStarterResult) => {
     if (aiStarterCache.has(key)) {
       aiStarterCache.delete(key);
     }
-    aiStarterCache.set(key, items);
+    aiStarterCache.set(key, result);
     while (aiStarterCache.size > 60) {
       const oldest = aiStarterCache.keys().next().value;
       if (oldest === undefined) break;
@@ -864,8 +893,11 @@ export default function contribute(server: PluginServerContext) {
       source: "default" | "contextual" | "ai";
       canRefineWithAi: boolean;
       cacheKey: string | null;
+      modelId?: string | null;
     }> => {
       try {
+        const prefs = await readSettings();
+        const starterModelMode = prefs.starterModelMode ?? "smart";
         const timeline = await paseo.agents.ref(agentId).timeline.refetch({
           direction: "tail",
           limit: 120,
@@ -877,6 +909,7 @@ export default function contribute(server: PluginServerContext) {
             source: "default",
             canRefineWithAi: false,
             cacheKey: null,
+            modelId: null,
           };
         }
 
@@ -892,24 +925,27 @@ export default function contribute(server: PluginServerContext) {
             source: "default",
             canRefineWithAi: false,
             cacheKey: null,
+            modelId: null,
           };
         }
 
-        const cacheKey = computeMainStarterFingerprint(
+        const fingerprint = computeMainStarterFingerprint(
           agentId,
           timeline.agent.status,
           timeline.entries,
         );
+        const cacheKey = `${fingerprint}:${starterModelMode}`;
 
-        if (!forceRefresh) {
+        if (!forceRefresh && starterModelMode !== "off") {
           const cached = aiStarterCache.get(cacheKey);
-          if (cached && cached.length > 0) {
+          if (cached && cached.starters.length > 0) {
             rememberAiStarters(cacheKey, cached);
             return {
-              starters: cached,
+              starters: cached.starters,
               source: "ai",
               canRefineWithAi: false,
               cacheKey,
+              modelId: cached.modelId,
             };
           }
         }
@@ -921,23 +957,38 @@ export default function contribute(server: PluginServerContext) {
           fallbackLocale: locale,
         });
 
+        if (starterModelMode === "off" && !forceRefresh) {
+          return {
+            starters: contextual,
+            source: "contextual",
+            canRefineWithAi: false,
+            cacheKey,
+            modelId: null,
+          };
+        }
+
         if (mode === "instant") {
           return {
             starters: contextual,
             source: "contextual",
             canRefineWithAi: true,
             cacheKey,
+            modelId: null,
           };
         }
 
-        const generateWithFastModel = async (): Promise<StarterPromptItem[] | null> => {
+        const effectiveStarterModelMode: Exclude<StarterModelMode, "off"> =
+          starterModelMode === "off" ? "smart" : starterModelMode;
+
+        const generateWithModel = async (): Promise<CachedStarterResult | null> => {
           const effectiveCwd = timeline.agent!.cwd || homedir();
           const mainWorkspaceId = timeline.agent!.workspaceId ?? null;
           const providerEntries = await loadProviderEntries(paseo, effectiveCwd);
-          const picked = pickFastStarterModel({
+          const picked = pickStarterModel({
             entries: providerEntries,
             preferredProvider: timeline.agent!.provider,
             preferredModel: timeline.agent!.model,
+            starterModelMode: effectiveStarterModelMode,
           });
           if (!picked) return null;
 
@@ -963,6 +1014,7 @@ export default function contribute(server: PluginServerContext) {
 
           let tempHandle: Awaited<ReturnType<ServerPaseoApi["agents"]["create"]>> | null = null;
           let tempWorkspaceId: string | null = null;
+          let completedCleanly = false;
 
           try {
             tempHandle = await paseo.agents.create({
@@ -987,7 +1039,9 @@ export default function contribute(server: PluginServerContext) {
             });
 
             tempWorkspaceId = tempHandle.current()?.workspaceId ?? tempHandle.workspaceId ?? null;
-            const finished = await tempHandle.waitForFinish(16_000);
+            const finished = await tempHandle.waitForFinish(30_000);
+            completedCleanly =
+              finished.status === "idle" || Boolean(finished.final?.archivedAt);
             let rawText = finished.lastMessage?.trim() ?? "";
 
             if (!rawText) {
@@ -1016,14 +1070,21 @@ export default function contribute(server: PluginServerContext) {
                 merged.push(item);
               }
             }
-            return merged.slice(0, 4);
+            return {
+              starters: merged.slice(0, 4),
+              modelId: picked.providerModel,
+            };
           } catch {
             return null;
           } finally {
             if (tempHandle) {
               const finalWsId =
                 tempHandle.current()?.workspaceId ?? tempHandle.workspaceId ?? tempWorkspaceId;
-              await tempHandle.archive().catch(() => {});
+              // When `autoArchive: true` finishes normally (`status === "idle"`), Paseo already
+              // archived the ephemeral agent; only call `archive()` explicitly on timeout/error.
+              if (!completedCleanly && !tempHandle.current()?.archivedAt) {
+                await tempHandle.archive().catch(() => {});
+              }
               if (
                 finalWsId &&
                 finalWsId !== workspaceId &&
@@ -1041,20 +1102,21 @@ export default function contribute(server: PluginServerContext) {
         let aiPromise = !forceRefresh ? inFlightAiStarters.get(cacheKey) : undefined;
         if (!aiPromise) {
           const promiseKey = forceRefresh ? `${cacheKey}:refresh:${Date.now()}` : cacheKey;
-          aiPromise = generateWithFastModel().finally(() => {
+          aiPromise = generateWithModel().finally(() => {
             inFlightAiStarters.delete(promiseKey);
           });
           inFlightAiStarters.set(promiseKey, aiPromise);
         }
 
-        const aiItems = await aiPromise;
-        if (aiItems && aiItems.length > 0) {
-          rememberAiStarters(cacheKey, aiItems);
+        const aiResult = await aiPromise;
+        if (aiResult && aiResult.starters.length > 0) {
+          rememberAiStarters(cacheKey, aiResult);
           return {
-            starters: aiItems,
+            starters: aiResult.starters,
             source: "ai",
             canRefineWithAi: false,
             cacheKey,
+            modelId: aiResult.modelId,
           };
         }
 
@@ -1063,6 +1125,7 @@ export default function contribute(server: PluginServerContext) {
           source: "contextual",
           canRefineWithAi: false,
           cacheKey,
+          modelId: null,
         };
       } catch {
         return {
@@ -1070,6 +1133,7 @@ export default function contribute(server: PluginServerContext) {
           source: "default",
           canRefineWithAi: false,
           cacheKey: null,
+          modelId: null,
         };
       }
     },

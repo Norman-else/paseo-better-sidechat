@@ -302,5 +302,6 @@ export const starterSuggestionsRpc = defineRpc({
     source: z.enum(["default", "contextual", "ai"]),
     canRefineWithAi: z.boolean(),
     cacheKey: z.string().nullable(),
+    modelId: z.string().nullable().optional(),
   }),
 });

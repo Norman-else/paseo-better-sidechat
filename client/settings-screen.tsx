@@ -19,6 +19,7 @@ import {
   type DefaultPermissionMode,
   sidechatSettings,
   type SidechatSettingsValues,
+  type StarterModelMode,
 } from "../shared/settings";
 import { notifyComposerPillPreference } from "./handoff";
 import { useMessages } from "./messages";
@@ -205,6 +206,20 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
             value={values.showComposerPill}
             disabled={disabled}
             onValueChange={(showComposerPill) => update({ showComposerPill })}
+          />
+
+          <SettingsSelect<StarterModelMode>
+            label={t("settingStarterModelLabel")}
+            hint={t("settingStarterModelHint")}
+            value={values.starterModelMode}
+            disabled={disabled}
+            options={[
+              { label: t("starterModelSmart"), value: "smart" },
+              { label: t("starterModelInherit"), value: "inherit" },
+              { label: t("starterModelFast"), value: "fast" },
+              { label: t("starterModelOff"), value: "off" },
+            ]}
+            onValueChange={(starterModelMode) => update({ starterModelMode })}
           />
 
           <SettingsAction

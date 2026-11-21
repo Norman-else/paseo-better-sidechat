@@ -333,6 +333,50 @@ test("multi-turn extraction and digest strictly prioritize the latest main agent
   });
   assert.ok(digest.latestTurnBlock.includes("新写工具默认自动放行，还是强制弹确认卡片"));
   assert.ok(digest.latestTurnBlock.includes("permission-router.ts"));
+  assert.ok(digest.latestTurnBlock.includes("edit: permission-router.ts"));
   assert.ok(!digest.latestTurnBlock.includes("OldRedisTimeoutError"));
   assert.ok(digest.earlierBackgroundBlock.includes("OLD-101"));
+});
+
+test("digest expands immediately preceding turn when the latest assistant reply is a short confirmation", () => {
+  const entries: TimelineEntryLike[] = [
+    {
+      item: {
+        type: "user_message",
+        id: "u1",
+        text: "执行并回复",
+      },
+    },
+    {
+      item: {
+        type: "assistant_message",
+        id: "a1",
+        text: "Order 314887 已改好，Shopify 同步状态是 PENDING，旧数据备份在 `/app/backups/prod-accounting/update_receivable_20261121_003706.csv`，上一单 M-311271 退货抵了 $24.49。",
+      },
+    },
+    {
+      item: {
+        type: "user_message",
+        id: "u2",
+        text: "再看下还有没有新消息",
+      },
+    },
+    {
+      item: {
+        type: "assistant_message",
+        id: "a2",
+        text: "侧边聊天的结论是对的，目前没有新消息。Order 314887 已改好，Itzel 要的下拉筛选还在排期（PSOS-6384 / 6385）。",
+      },
+    },
+  ];
+
+  const digest = buildRecencyWeightedStarterDigest({
+    title: "Project Finance",
+    cwd: "/repo",
+    status: "idle",
+    entries,
+  });
+  assert.ok(digest.latestTurnBlock.includes("PSOS-6384 / 6385"));
+  assert.ok(digest.earlierBackgroundBlock.includes("M-311271"));
+  assert.ok(digest.earlierBackgroundBlock.includes("update_receivable_20261121_003706.csv"));
 });

@@ -201,6 +201,7 @@ interface StructuredTurn {
   assistantMessages: string[];
   assistantText: string;
   files: string[];
+  toolActions: string[];
   errors: string[];
 }
 
@@ -212,6 +213,12 @@ function partitionTurns(entries: ReadonlyArray<TimelineEntryLike>): {
   let current: StructuredTurn | null = null;
   const pendingTodos: string[] = [];
 
+  const pushToolAction = (turn: StructuredTurn, label: string) => {
+    const clean = compactText(label, 64);
+    if (!clean || turn.toolActions.includes(clean)) return;
+    if (turn.toolActions.length < 10) turn.toolActions.push(clean);
+  };
+
   for (const entry of entries) {
     const { item } = entry;
     if (item.type === "user_message") {
@@ -222,6 +229,7 @@ function partitionTurns(entries: ReadonlyArray<TimelineEntryLike>): {
         assistantMessages: [],
         assistantText: "",
         files: [],
+        toolActions: [],
         errors: [],
       };
       turns.push(current);
@@ -234,6 +242,7 @@ function partitionTurns(entries: ReadonlyArray<TimelineEntryLike>): {
         assistantMessages: [],
         assistantText: "",
         files: [],
+        toolActions: [],
         errors: [],
       };
       turns.push(current);
@@ -256,6 +265,11 @@ function partitionTurns(entries: ReadonlyArray<TimelineEntryLike>): {
         const existingIdx = current.files.indexOf(fp);
         if (existingIdx !== -1) current.files.splice(existingIdx, 1);
         current.files.unshift(fp);
+        pushToolAction(current, `${detail.type}: ${baseName(fp)}`);
+      } else if (detail.type === "shell" && "command" in detail && typeof detail.command === "string") {
+        pushToolAction(current, `cmd: ${detail.command}`);
+      } else if (item.name?.trim()) {
+        pushToolAction(current, item.name.trim());
       }
       if (item.status === "failed" && item.error) {
         const msg =
@@ -679,36 +693,31 @@ export function buildContextualStarterPrompts(input: {
     if (secondaryIssue && primaryIssue) {
       pushUnique(
         "HelpCircle",
-        `${primaryIssue} 和 ${secondaryIssue} 有什么关联或冲突？`,
-        `结合主会话最新消息，帮我梳理 ${primaryIssue} 与 ${secondaryIssue} 各自负责的改动范围、依赖关系以及合并/上线时需要注意的地方。`,
+        `${secondaryIssue} / ${primaryIssue} 具体是什么内容？`,
+        `结合主会话最新消息，帮我查一下 ${secondaryIssue} 和 ${primaryIssue} 具体涉及什么需求或改动、目前状态以及各自优先级如何。`,
       );
     } else if (primaryIssue) {
       pushUnique(
         "HelpCircle",
-        `${primaryIssue} 还有哪些细节或风险要注意？`,
-        `针对主会话最新讨论的 ${primaryIssue}${primaryPr ? `（${primaryPr}）` : ""}，帮我检查一下它的改动是否还有遗漏的边界情况、兼容性问题或待确认点。`,
+        `${primaryIssue} 具体情况和当前进度如何？`,
+        `针对主会话最新提到的 ${primaryIssue}${primaryPr ? `（${primaryPr}）` : ""}，帮我查一下它的具体内容、当前状态以及还有哪些未决点。`,
       );
     }
 
     if (primarySym) {
       pushUnique(
         "Search",
-        `${compactText(primarySym, 18)} 具体是怎么生效的？`,
-        `主会话最新消息提到了 \`${primarySym}\`${secondarySym ? `（以及 \`${secondarySym}\`）` : ""}，请帮我追踪它在代码里的定义、读写链路以及边界条件下的行为。`,
+        `${compactText(primarySym, 18)} 具体是怎么处理的？`,
+        `主会话最新消息提到了 \`${primarySym}\`${secondarySym ? `（以及 \`${secondarySym}\`）` : ""}，请帮我追踪它在代码或配置里的具体实现与生效逻辑。`,
       );
     }
 
     if (primaryFile) {
       const filePair = secondaryFile ? `${primaryFile} 与 ${secondaryFile}` : primaryFile;
       pushUnique(
-        "ShieldAlert",
-        `检查 ${compactText(filePair, 18)} 的边界与副作用`,
-        `围绕主会话最新涉及的 ${filePair}，帮我排查改动后是否会影响现有调用方、异常分支或并发状态。`,
-      );
-      pushUnique(
         "Workflow",
-        `梳理 ${compactText(primaryFile, 18)} 相关的调用链`,
-        `结合主会话最新消息，帮我用清晰的结构梳理 ${primaryFile} 相关的核心调用流程与数据流转。`,
+        `梳理 ${compactText(filePair, 18)} 的后续影响`,
+        `围绕主会话最新涉及的 ${filePair}，帮我梳理它的关键链路、上下游影响以及需要注意的地方。`,
       );
     }
 
@@ -717,26 +726,26 @@ export function buildContextualStarterPrompts(input: {
       primaryIssue ||
       primarySym ||
       primaryFile ||
-      (input.title ? compactText(input.title, 16) : "最新回复中的方案");
+      (input.title ? compactText(input.title, 16) : "最新回复的内容");
     pushUnique(
-      "ShieldAlert",
-      `${compactText(topicRef, 14)} 有没有潜在边界或漏掉的情况？`,
-      `基于主会话最新一条回复的结论与实现（${topicRef}），帮我挑刺检查一下有没有遗漏的边界条件、异常分支或上线风险。`,
-    );
-    pushUnique(
-      "GitCompareArrows",
-      "最新回复里的做法有没有更简洁的替代方案？",
-      "结合主会话最新一条消息讨论的设计与改动，评估一下是否有更简单、耦合更低的实现方式，并对比各自取舍。",
-    );
-    pushUnique(
-      "BookOpen",
-      "提炼一下最新回复的核心结论与待拍板项",
-      "聚焦主会话最新一条回复，帮我精炼梳理：1）刚确定/完成了什么；2）还剩哪些没核实或待我拍板的问题；3）下一步最关键的动作。",
+      "HelpCircle",
+      `${compactText(topicRef, 14)} 还有哪些隐藏细节要留意？`,
+      `基于主会话最新一条回复提到的 ${topicRef}，有哪些一笔带过但值得我提前了解的背景、细节或注意事项？`,
     );
     pushUnique(
       "Workflow",
-      "最新这轮改动会影响哪些上下游模块？",
-      "围绕主会话最新一条消息涉及的改动内容，帮我分析受影响的上下游调用方、配置项以及需要重点回归验证的场景。",
+      "接下来会自动发生什么，或有后续步骤吗？",
+      "基于主会话最新一条回复的结论与状态，帮我分析接下来系统/流程会如何继续流转，以及是否需要额外的跟进或回滚准备。",
+    );
+    pushUnique(
+      "BookOpen",
+      "提炼最新回复的关键结论与未决项",
+      "聚焦主会话最新一条回复，帮我精炼梳理：1）刚完成或确定了什么；2）哪些细节没展开；3）还剩什么需要注意或拍板的事项。",
+    );
+    pushUnique(
+      "GitCompareArrows",
+      "还有别的思路或更稳妥的做法吗？",
+      "结合主会话最新一条消息讨论的方案，评估一下是否还有其他更简洁、低风险的做法或长期改进方向。",
     );
 
     return candidates.slice(0, 4);
@@ -937,12 +946,21 @@ export function buildRecencyWeightedStarterDigest(input: {
     latestLines.push(`Active pending todos: ${pendingTodos.join(" | ")}`);
   }
 
+  let primaryAssistantLength = 0;
+
   if (!latest.assistantText && prev?.assistantText) {
     if (prev.userText) {
       latestLines.push(`[Previous User Prompt]: ${compactText(prev.userText, 320)}`);
     }
+    if (prev.toolActions.length > 0) {
+      latestLines.push(`[Actions already executed by main agent]: ${prev.toolActions.join(", ")}`);
+    }
+    if (prev.files.length > 0) {
+      latestLines.push(`[Files touched]: ${prev.files.slice(0, 8).join(", ")}`);
+    }
+    primaryAssistantLength = prev.assistantText.length;
     latestLines.push(
-      `[Latest Completed Main Agent Message]:\n${preserveHeadAndTail(prev.assistantText, 3200)}`,
+      `[Latest Completed Main Agent Message (PRIMARY SOURCE)]:\n${preserveHeadAndTail(prev.assistantText, 3400)}`,
     );
     if (latest.userText) {
       latestLines.push(`[Current In-Progress User Prompt]: ${preserveHeadAndTail(latest.userText, 600)}`);
@@ -951,35 +969,36 @@ export function buildRecencyWeightedStarterDigest(input: {
     if (latest.userText) {
       latestLines.push(`[Latest User Prompt]: ${preserveHeadAndTail(latest.userText, 600)}`);
     }
+    if (latest.toolActions.length > 0) {
+      latestLines.push(`[Actions already executed in latest turn]: ${latest.toolActions.join(", ")}`);
+    }
     if (latest.files.length > 0) {
       latestLines.push(`[Files touched in latest turn]: ${latest.files.slice(0, 8).join(", ")}`);
     }
     if (latest.errors.length > 0) {
       latestLines.push(`[Errors in latest turn]: ${latest.errors.slice(0, 2).join(" | ")}`);
     }
-    const lastBubble = latest.assistantMessages.at(-1) ?? latest.assistantText;
-    if (latest.assistantMessages.length > 1) {
-      const earlierInTurn = latest.assistantMessages.slice(0, -1).join("\n");
+    if (latest.assistantText) {
+      primaryAssistantLength = latest.assistantText.length;
       latestLines.push(
-        `[Earlier narration in latest turn]: ${compactText(earlierInTurn, 420)}`,
-      );
-    }
-    if (lastBubble) {
-      latestLines.push(
-        `[Latest Main Agent Message (PRIMARY SOURCE — focus especially on its conclusions, open questions & ending sections)]:\n${preserveHeadAndTail(lastBubble, 3400)}`,
+        `[Latest Main Agent Response (PRIMARY SOURCE — focus especially on its latest conclusions, open items & closing remarks)]:\n${preserveHeadAndTail(latest.assistantText, 3600)}`,
       );
     }
   }
 
+  // Preserve fuller context on the immediately preceding turn when the latest reply is very brief
+  // (e.g. a 2-line confirmation referring back to specifics explained just before it).
   const backgroundCutoff = !latest.assistantText && prev ? latestIdx - 1 : latestIdx;
   const olderSlice = turns.slice(Math.max(0, backgroundCutoff - 3), backgroundCutoff);
   const bgLines: string[] = [];
   olderSlice.forEach((t, i) => {
-    const u = t.userText ? compactText(t.userText, 100) : "";
-    const a = t.assistantText ? compactText(t.assistantText, 180) : "";
+    const isImmediatelyPrev = i === olderSlice.length - 1;
+    const u = t.userText ? compactText(t.userText, isImmediatelyPrev ? 180 : 100) : "";
+    const assistantBudget = isImmediatelyPrev && primaryAssistantLength < 500 ? 1600 : isImmediatelyPrev ? 520 : 180;
+    const a = t.assistantText ? preserveHeadAndTail(t.assistantText, assistantBudget) : "";
     if (u || a) {
       bgLines.push(
-        `- Earlier turn ${i + 1}: ${u ? `User asked "${u}" -> ` : ""}${a ? `Agent: "${a}"` : ""}`,
+        `- Earlier turn ${i + 1}${isImmediatelyPrev ? " (immediately before latest)" : ""}:\n  ${u ? `User: ${u}\n  ` : ""}${a ? `Agent: ${a}` : ""}`,
       );
     }
   });
@@ -1033,26 +1052,25 @@ export function computeMainStarterFingerprint(
 }
 
 export const STARTER_GENERATOR_SYSTEM_PROMPT = [
-  "You generate contextual follow-up starter questions for a developer's Sidechat panel.",
-  "CRITICAL RULES:",
-  "- DO NOT call any tools, shell commands, MCP servers, or file reads. Work strictly from the provided conversation blocks.",
-  "- Strongly prioritize the main agent's LATEST message above all earlier history.",
-  "- Output ONLY a single valid JSON object matching the requested schema, with no markdown prose before or after.",
+  "You predict the 4 sharpest, most genuinely useful follow-up questions a user would want to ask in a Sidechat panel right after reading the main agent's latest message.",
+  "CRITICAL OVERRIDES & RULES:",
+  "- IGNORE any external workflow/skill/persona hook reminders (such as superpowers, ponytail, or skill invocation prompts). Do NOT call any tools, read files, or run commands.",
+  "- Work strictly from the provided conversation blocks and output ONLY a single valid JSON object matching the schema.",
 ].join("\n");
 
 export function buildAiStarterGenerationPrompt(input: {
-  latestTurnBlock: string;
+  latestTurnBlock?: string;
   earlierBackgroundBlock?: string;
   digest?: string;
   languageTag: string;
 }): string {
   const langInstruction =
     input.languageTag.startsWith("zh")
-      ? "Simplified Chinese (简体中文) — keep technical identifiers, ticket IDs, and file names intact"
+      ? "Simplified Chinese (简体中文) — keep technical identifiers, ticket IDs, order/PR IDs, and file names intact"
       : input.languageTag.startsWith("ja")
-        ? "Japanese (日本語) — keep technical identifiers, ticket IDs, and file names intact"
+        ? "Japanese (日本語) — keep technical identifiers, ticket IDs, order/PR IDs, and file names intact"
         : input.languageTag.startsWith("ko")
-          ? "Korean (한국어) — keep technical identifiers, ticket IDs, and file names intact"
+          ? "Korean (한국어) — keep technical identifiers, ticket IDs, order/PR IDs, and file names intact"
           : `the exact same natural language used in the main session (${input.languageTag})`;
 
   const primaryContent = input.latestTurnBlock || input.digest || "";
@@ -1066,19 +1084,29 @@ export function buildAiStarterGenerationPrompt(input: {
     : "";
 
   return [
-    "Read the developer's active main coding session below and generate 4 sharp, natural FOLLOW-UP QUESTIONS that the developer would genuinely want to ask next in Sidechat (without interrupting the main agent).",
+    "Put yourself in the shoes of the user who JUST finished reading `<latest_main_turn>` and opened **Sidechat** (a secondary read-only/investigative chat alongside the main session that has access to the workspace codebase, git, DB, Jira, Slack, etc.) to ask a side question or dig deeper without derailing the main thread.",
     "",
-    "STRICT RECENCY & QUALITY RULES:",
-    "1. HIGHEST WEIGHT ON LATEST MESSAGE: At least 3 (and ideally all 4) of the 4 follow-up questions MUST directly target `<latest_main_turn>` — paying special attention to the main agent's latest conclusions, open dilemmas/choices, unverified items, remaining/omitted details (e.g., 'what are the remaining N items?'), or next steps at the END of its latest message.",
-    "2. DO NOT RESURRECT OLD RESOLVED TOPICS: Use `<earlier_turns_background>` ONLY to understand domain terms. Never ask about topics from earlier turns that are already done or superseded by `<latest_main_turn>`.",
-    "3. Phrase `title` like a natural question or crisp check a developer immediately thinks of right after reading `<latest_main_turn>` (for Chinese/Japanese/Korean: <= 22 characters; for English: <= 48 characters). NEVER output generic boilerplate like 'Explain recent changes' or 'Check edge cases'.",
-    "4. Make `prompt` a clear, direct 1-2 sentence sidechat question ready to send as-is, referencing the exact entities/files/options/tickets from `<latest_main_turn>`.",
-    "5. Cover 4 distinct angles across the 4 items (e.g., weighing an open decision/trade-off from the latest reply, unpacking omitted/remaining items, verifying an unverified claim or subtle side-effect, and probing a specific mechanism/conflict).",
-    `6. Write BOTH \`title\` and \`prompt\` in ${langInstruction}.`,
-    `7. Choose \`icon\` for each item from: ${STARTER_ICON_NAMES.join(", ")}.`,
+    "Predict the **4 questions or deep-dive prompts the user is MOST likely to actually want to click and ask next**:",
+    "",
+    "WHAT TO PRIORITIZE (highest accuracy):",
+    "1. **FOCUS ON THE LATEST TURN**: At least 3–4 items MUST directly follow up on `<latest_main_turn>` (especially its conclusions, ending notes, newly changed states, or briefly mentioned references). Use `<earlier_turns_background>` only to understand what those references mean.",
+    "2. **FOLLOW NATURAL HUMAN CURIOSITY (do NOT force-fit artificial templates!)**: Depending on what the main session is actually doing (coding, debugging, DB/ops execution, or ticket triage), pick the 4 most genuinely helpful angles such as:",
+    "   - *Unpacking summarized/omitted specifics*: Things referenced briefly by ID, count, or shorthand without details (e.g., 'what are the remaining 8 tickets?', 'what is PSOS-6384 / 6385 about?', details of a referenced record like an order/PR/module).",
+    "   - *Understanding 'what happens next' or downstream behavior*: Side effects, async sync transitions (e.g., PENDING -> SYNCED), rollback/recovery steps, or how a change interacts with other modules.",
+    "   - *Helping decide a real open question/choice*: ONLY when the main agent actually left a decision, trade-off, or ambiguity for the user to weigh in on.",
+    "   - *Digging into genuine remaining uncertainties/risks*: Things explicitly left unverified, still failing, conflicting, or pending follow-up.",
+    "3. **AVOID INACCURATE OR NOISY SUGGESTIONS**:",
+    "   - NEVER tell the user to re-check or question something the main agent **already verified/completed**, OR explicitly said was **intentionally skipped per standard workflow/policy** (unless there is a real contradiction or bug).",
+    "   - NEVER output generic code-review filler ('Check edge cases', 'Compare alternatives', 'Trace call flow') when the conversation is operational/triage or when a concrete domain question is clearly more relevant.",
+    "   - NEVER resurrect resolved problems from earlier turns that are superseded by `<latest_main_turn>`.",
+    "4. **STYLE**:",
+    "   - `title`: Natural, conversational question/action phrased the way the user thinks it (Chinese/Japanese/Korean: <= 22 chars; English: <= 46 chars).",
+    "   - `prompt`: 1–2 crisp, self-contained sentences naming exact IDs, statuses, tables, files, or options so Sidechat can answer or look them up immediately.",
+    `   - Language: Write BOTH \`title\` and \`prompt\` in ${langInstruction}.`,
+    `   - \`icon\`: Choose from ${STARTER_ICON_NAMES.join(", ")}.`,
     "",
     "Return ONLY raw JSON in this exact shape:",
-    '{"starters":[{"icon":"GitCompareArrows","title":"...","prompt":"..."},{"icon":"ListChecks","title":"...","prompt":"..."},{"icon":"ShieldAlert","title":"...","prompt":"..."},{"icon":"Workflow","title":"...","prompt":"..."}]}',
+    '{"starters":[{"icon":"HelpCircle","title":"...","prompt":"..."},{"icon":"Workflow","title":"...","prompt":"..."},{"icon":"ListChecks","title":"...","prompt":"..."},{"icon":"Search","title":"...","prompt":"..."}]}',
     "",
     "<latest_main_turn priority=\"HIGHEST\">",
     primaryContent,

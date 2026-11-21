@@ -13,6 +13,9 @@ export const defaultPermissionModeSchema = z.enum([
 ]);
 export type DefaultPermissionMode = z.infer<typeof defaultPermissionModeSchema>;
 
+export const starterModelModeSchema = z.enum(["smart", "inherit", "fast", "off"]);
+export type StarterModelMode = z.infer<typeof starterModelModeSchema>;
+
 export const sidechatSettingsSchema = z.object({
   defaultContextMode: contextModeSchema.default("first_turn"),
   contextTurns: z.number().int().min(1).max(30).default(6),
@@ -21,6 +24,7 @@ export const sidechatSettingsSchema = z.object({
   readOnlyGuard: z.boolean().default(true),
   skipExternalMcp: z.boolean().default(false),
   showComposerPill: z.boolean().default(true),
+  starterModelMode: starterModelModeSchema.default("smart"),
 });
 
 export type SidechatSettingsValues = z.infer<typeof sidechatSettingsSchema>;
@@ -33,12 +37,13 @@ export const DEFAULT_SIDECHAT_SETTINGS: SidechatSettingsValues = {
   readOnlyGuard: true,
   skipExternalMcp: false,
   showComposerPill: true,
+  starterModelMode: "smart",
 };
 
 export const sidechatSettings = defineSettings({
   id: "preferences",
   scope: "host",
-  version: 3,
+  version: 4,
   schema: sidechatSettingsSchema,
   migrate(raw, fromVersion) {
     const prev = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -57,6 +62,8 @@ export const sidechatSettings = defineSettings({
           ? parsedMode.data
           : "inherit";
 
+    const parsedStarterMode = starterModelModeSchema.safeParse(prev.starterModelMode);
+
     return {
       defaultContextMode: prev.defaultContextMode ?? "first_turn",
       contextTurns: prev.contextTurns ?? 6,
@@ -68,6 +75,7 @@ export const sidechatSettings = defineSettings({
         typeof prev.skipExternalMcp === "boolean" ? prev.skipExternalMcp : false,
       showComposerPill:
         typeof prev.showComposerPill === "boolean" ? prev.showComposerPill : true,
+      starterModelMode: parsedStarterMode.success ? parsedStarterMode.data : "smart",
     };
   },
 });

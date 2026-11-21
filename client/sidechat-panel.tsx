@@ -1359,9 +1359,9 @@ function SidechatSurface({
   // Track when the active main agent finishes a turn (`running` -> `idle`) or updates while idle
   // so empty-state follow-up suggestions always reflect the newest main message immediately.
   const prevMainStatusRef = useRef<string | null>(null);
-  const settledMainUpdatedAtRef = useRef<string | null>(null);
-  if (mainAgent && mainAgent.status !== "running") {
-    settledMainUpdatedAtRef.current = mainAgent.updatedAt;
+  const settledUpdatedAtByAgentRef = useRef<Map<string, string>>(new Map());
+  if (mainAgentId && mainAgent && mainAgent.status !== "running") {
+    settledUpdatedAtByAgentRef.current.set(mainAgentId, mainAgent.updatedAt);
   }
   const [mainTurnSettleEpoch, setMainTurnSettleEpoch] = useState(0);
   useEffect(() => {
@@ -1373,7 +1373,10 @@ function SidechatSurface({
   }, [mainAgent?.status]);
 
   const isEmptyStarterView = !activeSideAgentId && projectedRows.length === 0 && !loadingTimeline;
-  const settledMainStamp = `${mainTurnSettleEpoch}:${settledMainUpdatedAtRef.current ?? ""}`;
+  const settledMainUpdatedAt = mainAgentId
+    ? settledUpdatedAtByAgentRef.current.get(mainAgentId) ?? ""
+    : "";
+  const settledMainStamp = `${mainTurnSettleEpoch}:${settledMainUpdatedAt}:${prefs.starterModelMode}`;
 
   const instantStartersQuery = useQuery({
     queryKey: [
@@ -1403,7 +1406,8 @@ function SidechatSurface({
       mainAgentId &&
         isEmptyStarterView &&
         starterCacheKey &&
-        instantStartersQuery.data?.canRefineWithAi,
+        instantStartersQuery.data?.canRefineWithAi &&
+        prefs.starterModelMode !== "off",
     ),
     staleTime: 5 * 60_000,
     queryFn: () =>
