@@ -300,7 +300,7 @@ test("fromTimelineSnapshot converts Paseo parent->child agent_message tool_call 
   }
 });
 
-test("projectTimelineRows keeps trailing active tool call visible during an open turn, then folds on completion", () => {
+test("projectTimelineRows keeps running tools inside a single stable tool_group without external row bounce, and preserves expanded state across turn completion", () => {
   const runningSnapshot = fromTimelineSnapshot({
     epoch: "e2",
     window: { minSeq: 0, maxSeq: 4, nextSeq: 5 },
@@ -347,18 +347,110 @@ test("projectTimelineRows keeps trailing active tool call visible during an open
     ],
   });
 
-  const liveRows = projectTimelineRows(runningSnapshot.items, {
+  // 1. Collapsed (default): running c2 stays INSIDE the single `tool_group` row (never pops outside!)
+  const liveCollapsedRows = projectTimelineRows(runningSnapshot.items, {
     chatDisplay: "collapseTurns",
     autoExpandReasoning: false,
     isTurnActive: true,
     expandedGroupIds: new Set(),
     toggledItemIds: new Set(),
   });
-
-  // Both completed c1 and running c2 remain visible individually while c2 is actively running!
   assert.deepEqual(
-    liveRows.map((r) => r.kind),
-    ["user_message", "tool_call", "tool_call"],
+    liveCollapsedRows.map((r) => r.kind),
+    ["user_message", "tool_group"],
+  );
+  const groupRow = liveCollapsedRows[1]!;
+  assert.equal(groupRow.kind, "tool_group");
+  if (groupRow.kind === "tool_group") {
+    assert.equal(groupRow.isLoading, true);
+    assert.equal(groupRow.items.length, 2);
+    assert.match(groupRow.activeStepLabel ?? "", /Bash.*git status/);
+  }
+
+  // 2. Expanded while running: ALL items (including running c2) render nested INSIDE the group!
+  const expandedSet = new Set([groupRow.id]);
+  const liveExpandedRows = projectTimelineRows(runningSnapshot.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: true,
+    expandedGroupIds: expandedSet,
+    toggledItemIds: new Set(),
+  });
+  assert.deepEqual(
+    liveExpandedRows.map((r) => r.kind),
+    ["user_message", "tool_group", "tool_call", "tool_call"],
+  );
+  if (liveExpandedRows[2]?.kind === "tool_call" && liveExpandedRows[3]?.kind === "tool_call") {
+    assert.equal(liveExpandedRows[2].nested, true);
+    assert.equal(liveExpandedRows[3].nested, true);
+  }
+
+  // 3. Turn finishes with an assistant message: the group ID stays identical so expansion state is preserved!
+  const finishedSnapshot = fromTimelineSnapshot({
+    epoch: "e2",
+    window: { minSeq: 0, maxSeq: 5, nextSeq: 6 },
+    agent: { status: "idle", activeTurn: null },
+    entries: [
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:00Z",
+        seqStart: 1,
+        seqEnd: 1,
+        item: { type: "user_message", text: "Check git diff" },
+      },
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:01Z",
+        seqStart: 2,
+        seqEnd: 2,
+        item: {
+          type: "tool_call",
+          callId: "c1",
+          name: "Read",
+          status: "completed",
+          error: null,
+          detail: { type: "read", filePath: "package.json" },
+        },
+      },
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:02Z",
+        seqStart: 3,
+        seqEnd: 3,
+        item: {
+          type: "tool_call",
+          callId: "c2",
+          name: "Bash",
+          status: "completed",
+          error: null,
+          detail: { type: "shell", command: "git status" },
+        },
+      },
+      {
+        provider: "claude",
+        turnId: "t-live",
+        timestamp: "2026-11-21T03:00:04Z",
+        seqStart: 4,
+        seqEnd: 4,
+        item: { type: "assistant_message", text: "Working tree is clean." },
+      },
+    ],
+  });
+
+  const finishedExpandedRows = projectTimelineRows(finishedSnapshot.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: false,
+    expandedGroupIds: expandedSet,
+    toggledItemIds: new Set(),
+  });
+  assert.equal(finishedExpandedRows[1]?.id, groupRow.id);
+  assert.deepEqual(
+    finishedExpandedRows.map((r) => r.kind),
+    ["user_message", "turn_summary", "tool_call", "tool_call", "assistant_message"],
   );
 });
 

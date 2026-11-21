@@ -15,7 +15,6 @@ import {
   useWorkspace,
 } from "@getpaseo/plugin/client";
 import {
-  FlatList,
   Icon,
   Loading,
   Modal,
@@ -35,10 +34,10 @@ import type {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
-  type FlatList as NativeFlatList,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   Pressable,
+  type ScrollView as NativeScrollView,
   Text,
   View,
 } from "react-native";
@@ -531,8 +530,11 @@ function SidechatSurface({
   const [contextPreviewOpen, setContextPreviewOpen] = useState(false);
 
   // Scroll management & initial-send coordination
-  const listRef = useRef<NativeFlatList<ProjectedRow> | null>(null);
+  const scrollRef = useRef<NativeScrollView | null>(null);
   const stickToBottomRef = useRef(true);
+  const scrollMetricsRef = useRef({ offsetY: 0, contentHeight: 0, viewportHeight: 0 });
+  const manualFoldAnchorOffsetRef = useRef<number | null>(null);
+  const rowOffsetsRef = useRef<Map<string, number>>(new Map());
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [turnStartedAtMs, setTurnStartedAtMs] = useState<number | null>(null);
   const pendingInitialSendRef = useRef<{
@@ -553,6 +555,7 @@ function SidechatSurface({
   useEffect(() => {
     setExpandedGroupIds(new Set());
     setToggledItemIds(new Set());
+    rowOffsetsRef.current.clear();
   }, [activeSideAgentId, appearance.chatDisplay, appearance.autoExpandReasoning]);
 
   // Subscribe to `activeSideAgentId` timeline & agent updates.
@@ -688,17 +691,14 @@ function SidechatSurface({
     }
   }, [isBusy, turnStartedAtMs]);
 
+  // Only show the standalone bottom status row BEFORE the first thought/tool/message of the turn
+  // arrives, so consecutive tool calls never cause a footer row to mount/unmount and bounce height!
   const liveTurnPhase = useMemo<"starting" | "thinking" | "working" | null>(() => {
     if (creatingThread) return "starting";
     if (!timelineState.isTurnActive) return null;
     const last = timelineState.items.at(-1);
     if (!last || last.kind === "user_message") return "thinking";
-    if (last.kind === "assistant_message" && last.streaming && last.text.trim().length > 0) {
-      return null;
-    }
-    if (last.kind === "thought" && last.status === "loading") return null;
-    if (last.kind === "tool_call" && last.status === "running") return null;
-    return "working";
+    return null;
   }, [creatingThread, timelineState.isTurnActive, timelineState.items]);
 
   // Determine whether main session context will be attached on next message.
@@ -755,16 +755,21 @@ function SidechatSurface({
     [appearance.chatOutlineEnabled, timelineState.items],
   );
 
-  // Auto-scroll on streaming updates when user is pinned near bottom.
+  // Auto-scroll ONLY on actual timeline stream updates (never on manual fold/unfold clicks!).
   useEffect(() => {
-    if (!stickToBottomRef.current || projectedRows.length === 0) return;
+    if (!stickToBottomRef.current || timelineState.items.length === 0) return;
+    if (manualFoldAnchorOffsetRef.current !== null) return;
     const timer = setTimeout(() => {
-      listRef.current?.scrollToEnd({ animated: false });
-    }, 24);
+      scrollRef.current?.scrollToEnd({ animated: false });
+    }, 20);
     return () => clearTimeout(timer);
-  }, [projectedRows]);
+  }, [timelineState.items, liveTurnPhase, activeSideAgentId]);
 
   const handleToggleItem = useCallback((id: string) => {
+    manualFoldAnchorOffsetRef.current = scrollMetricsRef.current.offsetY;
+    setTimeout(() => {
+      manualFoldAnchorOffsetRef.current = null;
+    }, 120);
     setToggledItemIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -774,6 +779,10 @@ function SidechatSurface({
   }, []);
 
   const handleToggleGroup = useCallback((id: string) => {
+    manualFoldAnchorOffsetRef.current = scrollMetricsRef.current.offsetY;
+    setTimeout(() => {
+      manualFoldAnchorOffsetRef.current = null;
+    }, 120);
     setExpandedGroupIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -1080,6 +1089,11 @@ function SidechatSurface({
 
   const handleScroll = useCallback((ev: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = ev.nativeEvent;
+    scrollMetricsRef.current = {
+      offsetY: contentOffset.y,
+      contentHeight: contentSize.height,
+      viewportHeight: layoutMeasurement.height,
+    };
     const distanceFromBottom =
       contentSize.height - (contentOffset.y + layoutMeasurement.height);
     const nearBottom = distanceFromBottom <= 90;
@@ -1160,18 +1174,17 @@ function SidechatSurface({
         label: `#${entry.promptIndex}  ${entry.preview}`,
         icon: "CornerDownRight",
         onSelect: () => {
-          const targetIdx = projectedRows.findIndex((r) => r.id === entry.id);
-          if (targetIdx >= 0) {
+          const targetY = rowOffsetsRef.current.get(entry.id);
+          if (targetY !== undefined) {
             stickToBottomRef.current = false;
-            listRef.current?.scrollToIndex({
-              index: targetIdx,
+            scrollRef.current?.scrollTo({
+              y: Math.max(0, targetY - 10),
               animated: true,
-              viewPosition: 0.08,
             });
           }
         },
       })),
-    [promptOutline, projectedRows],
+    [promptOutline],
   );
 
   const modelMenuOptions: MenuOption[] = useMemo(() => {
@@ -1650,11 +1663,8 @@ function SidechatSurface({
             </View>
           </ScrollView>
         ) : (
-          <FlatList
-            ref={listRef}
-            data={projectedRows}
-            extraData={{ timelineState, externalTimelinePlugins }}
-            keyExtractor={(item) => item.id}
+          <ScrollView
+            ref={scrollRef}
             style={[{ flex: 1 }, stableScrollbarStyle]}
             contentContainerStyle={{
               width: "100%",
@@ -1665,40 +1675,93 @@ function SidechatSurface({
               paddingBottom: 16,
               gap: 4,
             }}
+            onLayout={(e) => {
+              scrollMetricsRef.current.viewportHeight = e.nativeEvent.layout.height;
+            }}
+            onContentSizeChange={(_w, nextContentHeight) => {
+              const prevContentHeight = scrollMetricsRef.current.contentHeight;
+              scrollMetricsRef.current.contentHeight = nextContentHeight;
+              const savedManualOffset = manualFoldAnchorOffsetRef.current;
+              if (savedManualOffset !== null) {
+                manualFoldAnchorOffsetRef.current = null;
+                if (nextContentHeight < prevContentHeight && savedManualOffset > 80) {
+                  const maxOffset = Math.max(
+                    0,
+                    nextContentHeight - scrollMetricsRef.current.viewportHeight,
+                  );
+                  const clampedOffset = Math.min(savedManualOffset, maxOffset);
+                  if (scrollMetricsRef.current.offsetY < clampedOffset - 40) {
+                    scrollRef.current?.scrollTo({ y: clampedOffset, animated: false });
+                  }
+                }
+                return;
+              }
+              if (stickToBottomRef.current && isBusy && nextContentHeight > prevContentHeight) {
+                scrollRef.current?.scrollToEnd({ animated: false });
+              }
+            }}
             onScroll={handleScroll}
-            scrollEventThrottle={64}
-            onScrollToIndexFailed={() => {}}
-            ListFooterComponent={
-              <LiveTurnStatusRow
-                phase={liveTurnPhase}
-                startedAtMs={turnStartedAtMs}
-                theme={theme}
-                appearance={appearance}
-                t={t}
-              />
-            }
-            renderItem={({ item }) => (
-              <SidechatTimelineRowView
-                row={item}
-                agentId={activeSideAgentId ?? mainAgentId ?? ""}
-                host={host}
-                layout={layout}
-                externalPlugins={externalTimelinePlugins}
-                theme={theme}
-                palette={palette}
-                appearance={appearance}
-                compact={compact}
-                locale={locale}
-                t={t}
-                canInsertToMain={Boolean(mainComposer)}
-                canSendToMain={Boolean(mainAgentId)}
-                onToggleItem={handleToggleItem}
-                onToggleGroup={handleToggleGroup}
-                onInsertToMain={handleInsertToMain}
-                onSendToMain={handleSendToMain}
-              />
+            scrollEventThrottle={32}
+          >
+            {projectedRows.map((row) =>
+              row.kind === "user_message" ? (
+                <View
+                  key={row.id}
+                  onLayout={(e) => {
+                    rowOffsetsRef.current.set(row.id, e.nativeEvent.layout.y);
+                  }}
+                >
+                  <SidechatTimelineRowView
+                    row={row}
+                    agentId={activeSideAgentId ?? mainAgentId ?? ""}
+                    host={host}
+                    layout={layout}
+                    externalPlugins={externalTimelinePlugins}
+                    theme={theme}
+                    palette={palette}
+                    appearance={appearance}
+                    compact={compact}
+                    locale={locale}
+                    t={t}
+                    canInsertToMain={Boolean(mainComposer)}
+                    canSendToMain={Boolean(mainAgentId)}
+                    onToggleItem={handleToggleItem}
+                    onToggleGroup={handleToggleGroup}
+                    onInsertToMain={handleInsertToMain}
+                    onSendToMain={handleSendToMain}
+                  />
+                </View>
+              ) : (
+                <SidechatTimelineRowView
+                  key={row.id}
+                  row={row}
+                  agentId={activeSideAgentId ?? mainAgentId ?? ""}
+                  host={host}
+                  layout={layout}
+                  externalPlugins={externalTimelinePlugins}
+                  theme={theme}
+                  palette={palette}
+                  appearance={appearance}
+                  compact={compact}
+                  locale={locale}
+                  t={t}
+                  canInsertToMain={Boolean(mainComposer)}
+                  canSendToMain={Boolean(mainAgentId)}
+                  onToggleItem={handleToggleItem}
+                  onToggleGroup={handleToggleGroup}
+                  onInsertToMain={handleInsertToMain}
+                  onSendToMain={handleSendToMain}
+                />
+              ),
             )}
-          />
+            <LiveTurnStatusRow
+              phase={liveTurnPhase}
+              startedAtMs={turnStartedAtMs}
+              theme={theme}
+              appearance={appearance}
+              t={t}
+            />
+          </ScrollView>
         )}
 
         {showScrollToBottom ? (
@@ -1708,7 +1771,7 @@ function SidechatSurface({
             onPress={() => {
               stickToBottomRef.current = true;
               setShowScrollToBottom(false);
-              listRef.current?.scrollToEnd({ animated: true });
+              scrollRef.current?.scrollToEnd({ animated: true });
             }}
             style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
               {

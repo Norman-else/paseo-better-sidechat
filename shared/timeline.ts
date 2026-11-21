@@ -174,6 +174,7 @@ export type ProjectedRow =
       items: Array<SidechatThoughtItem | SidechatToolCallItem>;
       counts: WorkSummaryCounts;
       isLoading: boolean;
+      activeStepLabel: string | null;
       expanded: boolean;
     }
   | {
@@ -1393,12 +1394,30 @@ export function projectTimelineRows(
     segments.push(current);
   }
 
+  const describeActiveGroupStep = (
+    entry: SidechatThoughtItem | SidechatToolCallItem | undefined,
+  ): string | null => {
+    if (!entry) return null;
+    if (entry.kind === "thought") {
+      return (
+        entry.text
+          .trim()
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .at(-1) ?? null
+      );
+    }
+    const summary = describeSidechatToolCall(entry);
+    return summary.subtitle ? `${summary.title} ${summary.subtitle}` : summary.title;
+  };
+
   const pushWithToolGrouping = (
     segmentBody: ReadonlyArray<SidechatItem>,
     questionText: string | null,
     finalActionableAssistantId: string | null,
     groupToolCalls: boolean,
-    keepLiveActiveVisible = false,
+    isSegmentOpen = false,
   ) => {
     let run: Array<SidechatThoughtItem | SidechatToolCallItem> = [];
     const lastSegmentItem = segmentBody.at(-1) ?? null;
@@ -1420,19 +1439,9 @@ export function projectTimelineRows(
         return;
       }
 
-      // While a turn is actively running, keep any trailing running/latest step visible in place
-      // so the user always sees real-time progress (which file is being read, live thought, etc.).
-      const liveTrailing: Array<SidechatThoughtItem | SidechatToolCallItem> = [];
-      if (keepLiveActiveVisible) {
-        while (
-          run.length > 0 &&
-          (isItemLoading(run[run.length - 1]) || run[run.length - 1] === lastSegmentItem)
-        ) {
-          liveTrailing.unshift(run.pop()!);
-          if (liveTrailing.length >= 2) break;
-        }
-      }
-
+      // Match Paseo's `groupLiveToolCalls` (`MOD 5454` + `MOD 5455`):
+      // Never pop trailing active tools outside `tool_group` (which caused rows to bounce in and out
+      // on every step). Keep all items inside `run`, updating the single `tool_group` row in place!
       if (run.length === 1) {
         rows.push(
           projectSingleWorkOrAssistant(
@@ -1446,12 +1455,16 @@ export function projectTimelineRows(
       } else if (run.length > 1) {
         const groupId = `group:${run[0].id}`;
         const expanded = options.expandedGroupIds.has(groupId);
+        const isTrailingOpenRun = isSegmentOpen && run[run.length - 1] === lastSegmentItem;
+        const isLoading = run.some(isItemLoading) || isTrailingOpenRun;
+        const latestActive = [...run].reverse().find(isItemLoading) ?? run.at(-1);
         rows.push({
           kind: "tool_group",
           id: groupId,
           items: run,
           counts: summarizeWorkItems(run),
-          isLoading: run.some(isItemLoading),
+          isLoading,
+          activeStepLabel: isLoading ? describeActiveGroupStep(latestActive) : null,
           expanded,
         });
         if (expanded) {
@@ -1469,17 +1482,6 @@ export function projectTimelineRows(
         }
       }
 
-      for (const liveEntry of liveTrailing) {
-        rows.push(
-          projectSingleWorkOrAssistant(
-            liveEntry,
-            options,
-            questionText,
-            finalActionableAssistantId,
-            false,
-          ),
-        );
-      }
       run = [];
     };
 
@@ -1604,7 +1606,9 @@ export function projectTimelineRows(
     }
 
     const hostId = segment.userItem?.id ?? prefix[0].id;
-    const summaryId = `turn-summary:${hostId}`;
+    // Preserve the exact same `group:${prefix[0].id}` key that the live `tool_group` used while running,
+    // so manual expand/collapse state carries seamlessly across turn completion with zero remount!
+    const summaryId = `group:${prefix[0].id}`;
     const expanded = options.expandedGroupIds.has(summaryId);
     const foldableItems = prefix.filter(
       (

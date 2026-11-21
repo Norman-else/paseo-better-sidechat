@@ -530,6 +530,7 @@ const SummaryGroupRow = memo(function SummaryGroupRow({
   icon,
   counts,
   isLoading,
+  activeStepLabel,
   expanded,
   onToggle,
   theme,
@@ -541,16 +542,18 @@ const SummaryGroupRow = memo(function SummaryGroupRow({
   icon: "Wrench" | "Layers";
   counts: WorkSummaryCounts;
   isLoading: boolean;
+  activeStepLabel?: string | null;
   expanded: boolean;
   onToggle(id: string): void;
 }) {
   const { colors } = theme;
   const label = formatWorkSummaryLabel(counts, locale, isLoading);
+  const inlineStep = isLoading && !expanded && activeStepLabel ? activeStepLabel : null;
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={inlineStep ? `${label} · ${inlineStep}` : label}
       accessibilityState={{ expanded }}
       onPress={() => onToggle(id)}
       style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
@@ -562,8 +565,7 @@ const SummaryGroupRow = memo(function SummaryGroupRow({
           borderRadius: 7,
           borderWidth: 1,
           borderColor: expanded ? colors.border : "transparent",
-          backgroundColor:
-            pressed || hovered ? colors.surface2 : expanded ? colors.surface1 : colors.surface1,
+          backgroundColor: pressed || hovered ? colors.surface2 : colors.surface1,
           flexDirection: "row",
           alignItems: "center",
           gap: 7,
@@ -576,17 +578,41 @@ const SummaryGroupRow = memo(function SummaryGroupRow({
       ) : (
         <Icon name={icon} size={13} color={colors.foregroundMuted} />
       )}
-      <Text
-        numberOfLines={1}
+      <View
         style={{
           flex: 1,
-          fontSize: Math.max(12, appearance.uiBaseFontSize - 1),
-          color: isLoading ? colors.foreground : colors.foregroundMuted,
-          fontWeight: "500",
+          minWidth: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
         }}
       >
-        {label}
-      </Text>
+        <Text
+          numberOfLines={1}
+          style={{
+            flexShrink: inlineStep ? 0 : 1,
+            maxWidth: inlineStep ? "62%" : "100%",
+            fontSize: Math.max(12, appearance.uiBaseFontSize - 1),
+            color: isLoading ? colors.foreground : colors.foregroundMuted,
+            fontWeight: "500",
+          }}
+        >
+          {label}
+        </Text>
+        {inlineStep ? (
+          <Text
+            numberOfLines={1}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: Math.max(11, appearance.uiBaseFontSize - 2),
+              color: colors.foregroundMuted,
+            }}
+          >
+            {`· ${inlineStep}`}
+          </Text>
+        ) : null}
+      </View>
       <Icon
         name={expanded ? "ChevronDown" : "ChevronRight"}
         size={13}
@@ -1043,6 +1069,7 @@ export function SidechatTimelineRowView({
           icon="Wrench"
           counts={row.counts}
           isLoading={row.isLoading}
+          activeStepLabel={row.activeStepLabel}
           expanded={row.expanded}
           onToggle={onToggleGroup}
         />
