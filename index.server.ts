@@ -1,5 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
+import { resolveEffectiveProviderMode } from "./shared/composer-controls";
 import {
   createThreadRpc,
   listThreadsRpc,
@@ -22,108 +24,116 @@ import {
 } from "./shared/settings";
 import { SidechatThreadStore } from "./server/thread-store";
 
+async function loadProviderEntries(
+  paseo: PaseoApi,
+  cwd: string,
+): Promise<ProviderSnapshotEntry[]> {
+  try {
+    const snap = await paseo.providers.waitForReady({ cwd, timeoutMs: 5_000 });
+    return snap.entries ?? [];
+  } catch {
+    try {
+      const snap = await paseo.providers.snapshot({ cwd });
+      return snap.entries ?? [];
+    } catch {
+      return [];
+    }
+  }
+}
+
 async function resolveProviderAndModel(input: {
   paseo: PaseoApi;
   cwd: string;
+  entries: ProviderSnapshotEntry[];
   requestedProviderModel?: string;
   parentProvider?: string | null;
   parentModel?: string | null;
-  preferClaude: boolean;
-}): Promise<{ providerModel: string; provider: string; model: string }> {
+  inheritMainModel: boolean;
+}): Promise<{
+  providerModel: string;
+  provider: string;
+  model: string;
+  providerEntry: ProviderSnapshotEntry | null;
+}> {
+  const findEntry = (providerId: string) =>
+    input.entries.find((e) => e.provider === providerId) ?? null;
+
+  const pickDefaultModelForProvider = async (
+    providerId: string,
+  ): Promise<string | null> => {
+    const entry = findEntry(providerId);
+    const snapSelectable = (entry?.models ?? []).filter((m) => m.isSelectable !== false);
+    const snapChosen = snapSelectable.find((m) => m.isDefault) ?? snapSelectable[0];
+    if (snapChosen) return snapChosen.id;
+
+    try {
+      const listed = await input.paseo.providers.listModels(providerId, { cwd: input.cwd });
+      const selectable = (listed.models ?? []).filter((m) => m.isSelectable !== false);
+      const chosen = selectable.find((m) => m.isDefault) ?? selectable[0];
+      return chosen?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  // 1. Explicit `provider/model` selected by the user in Sidechat's model picker
   if (input.requestedProviderModel && input.requestedProviderModel.includes("/")) {
     const slash = input.requestedProviderModel.indexOf("/");
+    const provider = input.requestedProviderModel.slice(0, slash);
+    const model = input.requestedProviderModel.slice(slash + 1);
     return {
       providerModel: input.requestedProviderModel,
-      provider: input.requestedProviderModel.slice(0, slash),
-      model: input.requestedProviderModel.slice(slash + 1),
+      provider,
+      model,
+      providerEntry: findEntry(provider),
     };
   }
 
-  if (input.parentProvider === "claude" && input.parentModel) {
-    return {
-      providerModel: `claude/${input.parentModel}`,
-      provider: "claude",
-      model: input.parentModel,
-    };
-  }
-
-  if (input.preferClaude || !input.parentProvider) {
-    try {
-      const claudeModels = await input.paseo.providers.listModels("claude", { cwd: input.cwd });
-      const selectable = (claudeModels.models ?? []).filter((m) => m.isSelectable !== false);
-      const chosen = selectable.find((m) => m.isDefault) ?? selectable[0];
-      if (chosen) {
-        return {
-          providerModel: `claude/${chosen.id}`,
-          provider: "claude",
-          model: chosen.id,
-        };
-      }
-    } catch {
-      // Fall through to parent provider or available providers.
+  // 2. Inherit active main session's provider & model (works for Claude, Codex, Copilot, OpenCode, Kimi, etc.)
+  if (input.inheritMainModel && input.parentProvider) {
+    const model =
+      input.parentModel || (await pickDefaultModelForProvider(input.parentProvider));
+    if (model) {
+      return {
+        providerModel: `${input.parentProvider}/${model}`,
+        provider: input.parentProvider,
+        model,
+        providerEntry: findEntry(input.parentProvider),
+      };
     }
   }
 
-  if (input.parentProvider && input.parentModel) {
-    return {
-      providerModel: `${input.parentProvider}/${input.parentModel}`,
-      provider: input.parentProvider,
-      model: input.parentModel,
-    };
+  // 3. First enabled & ready provider from Paseo's host snapshot
+  for (const entry of input.entries) {
+    if (entry.enabled === false) continue;
+    const selectable = (entry.models ?? []).filter((m) => m.isSelectable !== false);
+    const chosen = selectable.find((m) => m.isDefault) ?? selectable[0];
+    if (chosen) {
+      return {
+        providerModel: `${entry.provider}/${chosen.id}`,
+        provider: entry.provider,
+        model: chosen.id,
+        providerEntry: entry,
+      };
+    }
   }
 
+  // 4. Fallback via `providers.listAvailable()`
   const available = await input.paseo.providers.listAvailable();
-  const candidates = [...available.providers].sort((a, b) =>
-    a.provider === "claude" ? -1 : b.provider === "claude" ? 1 : 0,
-  );
-  for (const entry of candidates) {
-    if (!entry.available) continue;
-    try {
-      const listed = await input.paseo.providers.listModels(entry.provider, { cwd: input.cwd });
-      const selectable = (listed.models ?? []).filter((m) => m.isSelectable !== false);
-      const chosen = selectable.find((m) => m.isDefault) ?? selectable[0];
-      if (chosen) {
-        return {
-          providerModel: `${entry.provider}/${chosen.id}`,
-          provider: entry.provider,
-          model: chosen.id,
-        };
-      }
-    } catch {
-      continue;
+  for (const item of available.providers) {
+    if (!item.available) continue;
+    const chosenId = await pickDefaultModelForProvider(item.provider);
+    if (chosenId) {
+      return {
+        providerModel: `${item.provider}/${chosenId}`,
+        provider: item.provider,
+        model: chosenId,
+        providerEntry: findEntry(item.provider),
+      };
     }
   }
 
   throw new Error("No available AI model provider found on this Paseo host.");
-}
-
-function resolveModeId(input: {
-  provider: string;
-  requestedModeId?: string | null;
-  parentProvider?: string | null;
-  parentModeId?: string | null;
-  settings: SidechatSettingsValues;
-}): string | undefined {
-  if (input.requestedModeId) return input.requestedModeId;
-  if (input.provider === "claude") {
-    switch (input.settings.defaultClaudeMode) {
-      case "plan":
-        return "plan";
-      case "default":
-        return "default";
-      case "bypassPermissions":
-        return "bypassPermissions";
-      case "inherit":
-        return input.parentProvider === "claude" && input.parentModeId ? input.parentModeId : "auto";
-      case "auto":
-      default:
-        return "auto";
-    }
-  }
-  if (input.parentProvider === input.provider && input.parentModeId) {
-    return input.parentModeId;
-  }
-  return undefined;
 }
 
 export default function contribute(server: PluginServerContext) {
@@ -237,22 +247,36 @@ export default function contribute(server: PluginServerContext) {
 
     const parentAgent = parentSnapshot?.agent ?? null;
     const effectiveCwd = parentAgent?.cwd || input.cwd;
+    const providerEntries = await loadProviderEntries(paseo, effectiveCwd);
 
-    const { providerModel, provider, model } = await resolveProviderAndModel({
+    const { providerModel, provider, model, providerEntry } = await resolveProviderAndModel({
       paseo,
       cwd: effectiveCwd,
+      entries: providerEntries,
       requestedProviderModel: input.providerModel,
       parentProvider: parentAgent?.provider,
       parentModel: parentAgent?.model,
-      preferClaude: prefs.preferClaudeProvider,
+      inheritMainModel: prefs.inheritMainModel,
     });
 
-    const resolvedModeId = resolveModeId({
+    let availableModes = providerEntry?.modes;
+    if (!availableModes) {
+      try {
+        const modeRes = await paseo.providers.listModes(provider, { cwd: effectiveCwd });
+        availableModes = modeRes.modes;
+      } catch {
+        availableModes = undefined;
+      }
+    }
+
+    const resolvedModeId = resolveEffectiveProviderMode({
       provider,
       requestedModeId: input.modeId,
       parentProvider: parentAgent?.provider,
       parentModeId: parentAgent?.currentModeId,
-      settings: prefs,
+      defaultPermissionMode: prefs.defaultPermissionMode,
+      availableModes,
+      providerDefaultModeId: providerEntry?.defaultModeId,
     });
 
     const resolvedThinkingId =
@@ -295,13 +319,20 @@ export default function contribute(server: PluginServerContext) {
     const title = deriveThreadTitle(input.prompt, "Sidechat");
     const now = new Date().toISOString();
 
-    const createAgentWithOptions = (includeFastMode: boolean) => {
-      const claudeOptions: Record<string, unknown> = {};
+    const createAgentWithOptions = (includeUserOptions: boolean) => {
+      const mergedOptions: Record<string, unknown> = {};
       if (prefs.fastStartup && provider === "claude") {
-        claudeOptions.extraArgs = { "strict-mcp-config": null };
+        mergedOptions.extraArgs = { "strict-mcp-config": null };
       }
-      if (includeFastMode && input.fastMode && provider === "claude") {
-        claudeOptions.fast_mode = true;
+      if (includeUserOptions) {
+        if (input.providerOptions) {
+          for (const [k, v] of Object.entries(input.providerOptions)) {
+            if (v !== undefined) mergedOptions[k] = v;
+          }
+        }
+        if (input.fastMode && provider === "claude") {
+          mergedOptions.fast_mode = true;
+        }
       }
 
       return paseo.agents.create({
@@ -327,7 +358,7 @@ export default function contribute(server: PluginServerContext) {
           ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
           ...(resolvedThinkingId ? { thinkingOptionId: resolvedThinkingId } : {}),
           ...(prefs.fastStartup && provider === "claude" ? { mcpServers: {} } : {}),
-          ...(Object.keys(claudeOptions).length > 0 ? { options: claudeOptions } : {}),
+          ...(Object.keys(mergedOptions).length > 0 ? { options: mergedOptions } : {}),
           systemPrompt: prefs.readOnlyGuard
             ? SIDECHAT_READONLY_SYSTEM_PROMPT
             : SIDECHAT_EDITABLE_SYSTEM_PROMPT,
@@ -339,11 +370,15 @@ export default function contribute(server: PluginServerContext) {
       });
     };
 
+    const hasCustomOptions =
+      Boolean(input.fastMode) ||
+      Boolean(input.providerOptions && Object.keys(input.providerOptions).length > 0);
+
     let handle: Awaited<ReturnType<typeof createAgentWithOptions>>;
     try {
       handle = await createAgentWithOptions(true);
     } catch (error) {
-      if (input.fastMode && provider === "claude") {
+      if (hasCustomOptions) {
         handle = await createAgentWithOptions(false);
       } else {
         throw error;

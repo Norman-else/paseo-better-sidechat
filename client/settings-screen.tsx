@@ -16,7 +16,7 @@ import { isDarkSurface } from "../shared/appearance";
 import {
   type ContextMode,
   DEFAULT_SIDECHAT_SETTINGS,
-  type DefaultClaudeMode,
+  type DefaultPermissionMode,
   sidechatSettings,
   type SidechatSettingsValues,
 } from "../shared/settings";
@@ -160,18 +160,27 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
             onValueChange={(raw) => update({ contextTurns: Number(raw) || 6 })}
           />
 
-          <SettingsSelect<DefaultClaudeMode>
+          <SettingsSelect<DefaultPermissionMode>
             label={t("settingDefaultModeLabel")}
             hint={t("settingDefaultModeHint")}
-            value={values.defaultClaudeMode}
+            value={values.defaultPermissionMode}
             disabled={disabled}
             options={[
+              { label: t("defaultModeInherit"), value: "inherit" },
               { label: t("defaultModeAuto"), value: "auto" },
               { label: t("defaultModePlan"), value: "plan" },
               { label: t("defaultModeAsk"), value: "default" },
-              { label: t("defaultModeInherit"), value: "inherit" },
+              { label: t("defaultModeBypass"), value: "bypassPermissions" },
             ]}
-            onValueChange={(defaultClaudeMode) => update({ defaultClaudeMode })}
+            onValueChange={(defaultPermissionMode) => update({ defaultPermissionMode })}
+          />
+
+          <SettingsSwitch
+            label={t("settingInheritModelLabel")}
+            hint={t("settingInheritModelHint")}
+            value={values.inheritMainModel}
+            disabled={disabled}
+            onValueChange={(inheritMainModel) => update({ inheritMainModel })}
           />
 
           <SettingsSwitch
@@ -180,14 +189,6 @@ export function SidechatSettingsScreen({ theme }: PluginSurfaceProps) {
             value={values.readOnlyGuard}
             disabled={disabled}
             onValueChange={(readOnlyGuard) => update({ readOnlyGuard })}
-          />
-
-          <SettingsSwitch
-            label={t("settingPreferClaudeLabel")}
-            hint={t("settingPreferClaudeHint")}
-            value={values.preferClaudeProvider}
-            disabled={disabled}
-            onValueChange={(preferClaudeProvider) => update({ preferClaudeProvider })}
           />
 
           <SettingsSwitch

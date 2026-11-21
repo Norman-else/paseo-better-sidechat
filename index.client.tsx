@@ -58,7 +58,22 @@ export default function contribute(client: PluginClientContext) {
     id: "open-sidechat",
     title: messages.message("openSidechat"),
     icon: "MessagesSquare",
-    keywords: ["btw", "sidechat", "claude", "side", "chat", "ask", "侧边", "聊天", "提问"],
+    keywords: [
+      "btw",
+      "sidechat",
+      "ai",
+      "claude",
+      "codex",
+      "copilot",
+      "opencode",
+      "kimi",
+      "side",
+      "chat",
+      "ask",
+      "侧边",
+      "聊天",
+      "提问",
+    ],
     context: "agent",
     onSelect: ({ openPanel }) => {
       openPanel("better-sidechat", { location: "explorer" });

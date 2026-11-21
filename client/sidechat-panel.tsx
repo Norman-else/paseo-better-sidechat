@@ -25,9 +25,12 @@ import {
 import type {
   AgentMode,
   AgentModelDefinition,
+  AgentOptionControl,
   AgentPermissionRequest,
   AgentPermissionResponse,
   AgentUsage,
+  JsonValue,
+  ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -41,6 +44,12 @@ import {
 } from "react-native";
 import { z } from "zod";
 import { deriveSidechatPalette } from "../shared/appearance";
+import {
+  formatProviderLabel,
+  resolveEffectiveProviderMode,
+  resolveModeIconName,
+  resolveProviderIconSvg,
+} from "../shared/composer-controls";
 import {
   composeSidechatPrompt,
   formatTransferToMainPrompt,
@@ -96,6 +105,7 @@ const tabStateSchema = z.object({
   draftThinkingId: z.string().nullable().default(null),
   draftModeId: z.string().nullable().default(null),
   draftFastMode: z.boolean().default(false),
+  draftOptions: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
   contextOverride: z.boolean().nullable().default(null),
 });
 
@@ -108,6 +118,7 @@ const DEFAULT_TAB_STATE: SidechatTabState = {
   draftThinkingId: null,
   draftModeId: null,
   draftFastMode: false,
+  draftOptions: {},
   contextOverride: null,
 };
 
@@ -253,61 +264,116 @@ function SidechatSurface({
   );
   const sideComposer = activeSideAgentId ? sideComposers[0] ?? null : null;
 
-  // Discover Claude models & modes on this host.
+  // Discover ALL enabled AI providers, models, modes, icons & labels on this Paseo host.
+  const catalogQueryKey = useMemo(
+    () => ["sidechat-catalog", host.id, effectiveCwd] as const,
+    [host.id, effectiveCwd],
+  );
+
   const catalogQuery = useQuery({
-    queryKey: ["sidechat-catalog", host.id, effectiveCwd],
+    queryKey: catalogQueryKey,
     enabled: Boolean(effectiveCwd),
-    staleTime: 60_000,
-    queryFn: async () => {
-      const models: AgentModelDefinition[] = [];
-      let claudeModes: AgentMode[] = [];
+    staleTime: 30_000,
+    queryFn: async (): Promise<{ entries: ProviderSnapshotEntry[] }> => {
+      let entries: ProviderSnapshotEntry[] = [];
       try {
-        const [claudeModelRes, claudeModeRes] = await Promise.all([
-          paseo.providers.listModels("claude", { cwd: effectiveCwd }),
-          paseo.providers.listModes("claude", { cwd: effectiveCwd }),
-        ]);
-        for (const m of claudeModelRes.models ?? []) {
-          if (m.isSelectable !== false) models.push(m);
-        }
-        claudeModes = claudeModeRes.modes ?? [];
+        const snap = await paseo.providers.waitForReady({
+          cwd: effectiveCwd,
+          timeoutMs: 8_000,
+        });
+        entries = snap.entries ?? [];
       } catch {
-        // Fallback: check other available providers if Claude is unavailable.
+        try {
+          const snap = await paseo.providers.snapshot({ cwd: effectiveCwd });
+          entries = snap.entries ?? [];
+        } catch {
+          entries = [];
+        }
       }
-      if (models.length === 0) {
+
+      if (entries.length === 0) {
         const avail = await paseo.providers.listAvailable();
+        const fallbackEntries: ProviderSnapshotEntry[] = [];
         for (const p of avail.providers) {
           if (!p.available) continue;
           try {
-            const res = await paseo.providers.listModels(p.provider, { cwd: effectiveCwd });
-            for (const m of res.models ?? []) {
-              if (m.isSelectable !== false) models.push(m);
-            }
+            const [modelRes, modeRes] = await Promise.all([
+              paseo.providers.listModels(p.provider, { cwd: effectiveCwd }),
+              paseo.providers.listModes(p.provider, { cwd: effectiveCwd }).catch(() => ({
+                modes: [] as AgentMode[],
+              })),
+            ]);
+            fallbackEntries.push({
+              provider: p.provider,
+              status: "ready",
+              enabled: true,
+              models: modelRes.models ?? [],
+              modes: modeRes.modes ?? [],
+            });
           } catch {
             continue;
           }
         }
+        entries = fallbackEntries;
       }
-      return { models, claudeModes };
+
+      return { entries };
     },
   });
 
-  const availableModels = catalogQuery.data?.models ?? [];
-  const availableClaudeModes = catalogQuery.data?.claudeModes ?? [];
+  // Live subscribe to provider snapshot updates (e.g. enabling/disabling providers in Paseo Settings).
+  useEffect(() => {
+    const unsubscribe = paseo.providers.subscribe(() => {
+      void queryClient.invalidateQueries({ queryKey: catalogQueryKey });
+    });
+    return unsubscribe;
+  }, [paseo, queryClient, catalogQueryKey]);
+
+  const enabledProviderEntries = useMemo(
+    () => (catalogQuery.data?.entries ?? []).filter((e) => e.enabled !== false),
+    [catalogQuery.data?.entries],
+  );
+
+  const availableModels = useMemo(() => {
+    const list: AgentModelDefinition[] = [];
+    for (const entry of enabledProviderEntries) {
+      for (const m of entry.models ?? []) {
+        if (m.isSelectable !== false) {
+          list.push(m);
+        }
+      }
+    }
+    return list;
+  }, [enabledProviderEntries]);
+
+  const defaultHostProvider =
+    enabledProviderEntries.find((e) => (e.models ?? []).some((m) => m.isSelectable !== false))
+      ?.provider ??
+    enabledProviderEntries[0]?.provider ??
+    "claude";
 
   // Effective provider/model, thinking option, and mode for active thread or draft.
   const effectiveProvider = activeSideAgentId
-    ? sideComposer?.agent.provider || activeThreadFromList?.provider || "claude"
-    : tabState.draftProviderModel
-      ? tabState.draftProviderModel.split("/")[0]
-      : mainAgent?.provider === "claude" || !prefs.preferClaudeProvider
-        ? mainAgent?.provider || "claude"
-        : "claude";
+    ? sideComposer?.agent.provider || activeThreadFromList?.provider || defaultHostProvider
+    : tabState.draftProviderModel && tabState.draftProviderModel.includes("/")
+      ? tabState.draftProviderModel.slice(0, tabState.draftProviderModel.indexOf("/"))
+      : prefs.inheritMainModel && mainAgent?.provider
+        ? mainAgent.provider
+        : defaultHostProvider;
+
+  const currentProviderEntry = useMemo(
+    () =>
+      enabledProviderEntries.find((e) => e.provider === effectiveProvider) ??
+      (catalogQuery.data?.entries ?? []).find((e) => e.provider === effectiveProvider) ??
+      null,
+    [enabledProviderEntries, catalogQuery.data?.entries, effectiveProvider],
+  );
 
   const effectiveModelId = activeSideAgentId
     ? sideComposer?.agent.model || activeThreadFromList?.model || null
-    : tabState.draftProviderModel
+    : tabState.draftProviderModel && tabState.draftProviderModel.includes("/")
       ? tabState.draftProviderModel.slice(tabState.draftProviderModel.indexOf("/") + 1)
-      : mainAgent?.provider === effectiveProvider && mainAgent.model
+      : prefs.inheritMainModel && mainAgent?.provider === effectiveProvider && mainAgent.model
         ? mainAgent.model
         : (availableModels.find((m) => m.provider === effectiveProvider && m.isDefault) ??
             availableModels.find((m) => m.provider === effectiveProvider) ??
@@ -326,20 +392,107 @@ function SidechatSurface({
     ? sideComposer?.agent.thinking ?? activeThreadFromList?.thinkingOptionId ?? null
     : tabState.draftThinkingId !== null
       ? tabState.draftThinkingId || null
-      : mainAgent?.provider === effectiveProvider && mainAgent.thinkingOptionId
+      : prefs.inheritMainModel &&
+          mainAgent?.provider === effectiveProvider &&
+          mainAgent.thinkingOptionId
         ? mainAgent.thinkingOptionId
         : currentModelDef?.defaultThinkingOptionId ?? null;
 
-  const effectiveModeId = activeSideAgentId
-    ? sideComposer?.agent.mode ?? activeThreadFromList?.modeId ?? "auto"
-    : tabState.draftModeId ??
-      (prefs.defaultClaudeMode === "inherit"
-        ? mainAgent?.currentModeId ?? "auto"
-        : prefs.defaultClaudeMode);
+  const providerModes = useMemo<AgentMode[]>(
+    () => currentProviderEntry?.modes ?? [],
+    [currentProviderEntry],
+  );
 
-  const fastModeEnabled = activeSideAgentId
-    ? Boolean(sideComposer?.agent.options?.fast_mode)
-    : tabState.draftFastMode;
+  const effectiveModeId = useMemo(() => {
+    if (activeSideAgentId) {
+      return (
+        sideComposer?.agent.mode ??
+        activeThreadFromList?.modeId ??
+        resolveEffectiveProviderMode({
+          provider: effectiveProvider,
+          defaultPermissionMode: prefs.defaultPermissionMode,
+          availableModes: currentProviderEntry ? providerModes : undefined,
+          providerDefaultModeId: currentProviderEntry?.defaultModeId,
+        }) ??
+        null
+      );
+    }
+    return (
+      resolveEffectiveProviderMode({
+        provider: effectiveProvider,
+        requestedModeId: tabState.draftModeId,
+        parentProvider: mainAgent?.provider,
+        parentModeId: mainAgent?.currentModeId,
+        defaultPermissionMode: prefs.defaultPermissionMode,
+        availableModes: currentProviderEntry ? providerModes : undefined,
+        providerDefaultModeId: currentProviderEntry?.defaultModeId,
+      }) ?? null
+    );
+  }, [
+    activeSideAgentId,
+    sideComposer?.agent.mode,
+    activeThreadFromList?.modeId,
+    effectiveProvider,
+    tabState.draftModeId,
+    mainAgent?.provider,
+    mainAgent?.currentModeId,
+    prefs.defaultPermissionMode,
+    currentProviderEntry,
+    providerModes,
+  ]);
+
+  // Query provider-specific option controls (`fast_mode` on Claude, Codex controls, etc.)
+  const controlsProviderTarget = effectiveModelId
+    ? `${effectiveProvider}/${effectiveModelId}`
+    : effectiveProvider;
+
+  const controlsQuery = useQuery({
+    queryKey: ["sidechat-controls", host.id, effectiveCwd, controlsProviderTarget],
+    enabled: Boolean(effectiveCwd && effectiveProvider),
+    staleTime: 30_000,
+    queryFn: () =>
+      paseo.providers.listControls({
+        provider: controlsProviderTarget,
+        cwd: effectiveCwd,
+      }),
+  });
+
+  const optionControls = useMemo<AgentOptionControl[]>(() => {
+    if (controlsQuery.data?.controls) {
+      return controlsQuery.data.controls;
+    }
+    if (effectiveProvider === "claude") {
+      return [
+        {
+          type: "toggle",
+          key: "fast_mode",
+          label: "Fast mode",
+          icon: "Zap",
+          defaultValue: false,
+        },
+      ];
+    }
+    return [];
+  }, [controlsQuery.data?.controls, effectiveProvider]);
+
+  const effectiveOptions = useMemo<Readonly<Record<string, JsonValue>>>(() => {
+    if (activeSideAgentId && sideComposer) {
+      return sideComposer.agent.options;
+    }
+    const base = (controlsQuery.data?.options ?? {}) as Record<string, JsonValue>;
+    const merged: Record<string, JsonValue> = { ...base, ...tabState.draftOptions };
+    if (tabState.draftFastMode && effectiveProvider === "claude" && merged.fast_mode === undefined) {
+      merged.fast_mode = true;
+    }
+    return merged;
+  }, [
+    activeSideAgentId,
+    sideComposer,
+    controlsQuery.data?.options,
+    tabState.draftOptions,
+    tabState.draftFastMode,
+    effectiveProvider,
+  ]);
 
   // Live timeline & agent snapshot subscription for `activeSideAgentId`
   const [timelineState, setTimelineState] = useState<TimelineState>(() =>
@@ -637,7 +790,8 @@ function SidechatSurface({
             providerModel,
             modeId: effectiveModeId,
             thinkingOptionId: effectiveThinkingId,
-            fastMode: fastModeEnabled,
+            providerOptions: tabState.draftOptions,
+            fastMode: Boolean(effectiveOptions.fast_mode),
             attachMainContext: shouldAttachMainContext,
             quotedSelection: quoteToSend,
             deferInitialSend: true,
@@ -720,7 +874,8 @@ function SidechatSurface({
       effectiveModelId,
       effectiveModeId,
       effectiveThinkingId,
-      fastModeEnabled,
+      tabState.draftOptions,
+      effectiveOptions,
       shouldAttachMainContext,
       workspaceId,
       mainAgentId,
@@ -860,11 +1015,18 @@ function SidechatSurface({
       },
     ];
     for (const thread of threads) {
+      const entry = enabledProviderEntries.find((e) => e.provider === thread.provider);
+      const providerLabel = formatProviderLabel(thread.provider, entry?.label);
+      const threadSvg =
+        thread.status === "running"
+          ? null
+          : resolveProviderIconSvg(thread.provider, entry?.iconSvg);
       opts.push({
         id: thread.agentId,
         label: thread.title || t("untitledThread"),
-        subtitle: `${thread.provider}${thread.model ? `/${thread.model}` : ""}`,
+        subtitle: `${providerLabel}${thread.model ? ` · ${thread.model}` : ""}`,
         icon: thread.status === "running" ? "LoaderCircle" : "MessageSquare",
+        iconSvg: threadSvg,
         selected: thread.agentId === activeSideAgentId,
         onSelect: () => {
           patchTabState({ sideAgentId: thread.agentId, contextOverride: null });
@@ -893,7 +1055,16 @@ function SidechatSurface({
       });
     }
     return opts;
-  }, [activeSideAgentId, threads, navigation, host.id, t, patchTabState, handleArchiveActiveThread]);
+  }, [
+    activeSideAgentId,
+    threads,
+    enabledProviderEntries,
+    navigation,
+    host.id,
+    t,
+    patchTabState,
+    handleArchiveActiveThread,
+  ]);
 
   const outlineOptions: MenuOption[] = useMemo(
     () =>
@@ -916,40 +1087,77 @@ function SidechatSurface({
     [promptOutline, projectedRows],
   );
 
-  const modelMenuOptions: MenuOption[] = useMemo(
-    () =>
-      availableModels.map((m) => {
+  const modelMenuOptions: MenuOption[] = useMemo(() => {
+    const multiProvider = enabledProviderEntries.length > 1;
+    const items: MenuOption[] = [];
+
+    for (const entry of enabledProviderEntries) {
+      const providerLabel = formatProviderLabel(entry.provider, entry.label);
+      const providerSvg = resolveProviderIconSvg(entry.provider, entry.iconSvg);
+      const selectable = (entry.models ?? []).filter((m) => m.isSelectable !== false);
+
+      for (const m of selectable) {
         const key = `${m.provider}/${m.id}`;
         const isSelected = m.provider === effectiveProvider && m.id === effectiveModelId;
-        return {
+        items.push({
           id: key,
           label: m.label || m.id,
-          subtitle: m.provider === "claude" ? "Claude" : m.provider,
+          subtitle: m.description || (multiProvider ? null : providerLabel),
+          section: multiProvider ? providerLabel : null,
+          iconSvg: providerSvg,
+          icon: providerSvg ? undefined : "Cpu",
           selected: isSelected,
           onSelect: () => {
-            if (activeSideAgentId && sideComposer) {
+            if (activeSideAgentId && sideComposer && m.provider === effectiveProvider) {
               void sideComposer.setModel(m.id).catch((err) => {
                 toast.error(err instanceof Error ? err.message : "Failed to switch model");
               });
-            } else {
+              return;
+            }
+            if (activeSideAgentId && m.provider !== effectiveProvider) {
+              // Running Paseo agents are bound to their provider runtime; start a clean draft on the new provider.
               patchTabState({
+                sideAgentId: null,
                 draftProviderModel: key,
                 draftThinkingId: m.defaultThinkingOptionId ?? null,
+                draftModeId: entry.defaultModeId ?? null,
+                draftFastMode: false,
+                draftOptions: {},
+                contextOverride: null,
               });
+              setTimelineState(createEmptyTimelineState());
+              toast.show(t("switchedProviderNewThread", { provider: providerLabel }), {
+                variant: "info",
+              });
+              return;
             }
+            const changedProvider = m.provider !== effectiveProvider;
+            patchTabState({
+              draftProviderModel: key,
+              draftThinkingId: m.defaultThinkingOptionId ?? null,
+              ...(changedProvider
+                ? {
+                    draftModeId: entry.defaultModeId ?? null,
+                    draftFastMode: false,
+                    draftOptions: {},
+                  }
+                : {}),
+            });
           },
-        };
-      }),
-    [
-      availableModels,
-      effectiveProvider,
-      effectiveModelId,
-      activeSideAgentId,
-      sideComposer,
-      patchTabState,
-      toast,
-    ],
-  );
+        });
+      }
+    }
+    return items;
+  }, [
+    enabledProviderEntries,
+    effectiveProvider,
+    effectiveModelId,
+    activeSideAgentId,
+    sideComposer,
+    patchTabState,
+    t,
+    toast,
+  ]);
 
   const thinkingMenuOptions: MenuOption[] = useMemo(() => {
     if (thinkingOptions.length === 0) return [];
@@ -971,20 +1179,24 @@ function SidechatSurface({
   }, [thinkingOptions, effectiveThinkingId, activeSideAgentId, sideComposer, patchTabState, toast]);
 
   const modeMenuOptions: MenuOption[] = useMemo(() => {
-    const modes =
-      effectiveProvider === "claude" && availableClaudeModes.length > 0
-        ? availableClaudeModes
-        : [
-            { id: "auto", label: t("modeAuto") },
-            { id: "plan", label: t("modePlan") },
-            { id: "default", label: t("modeDefault") },
-            { id: "acceptEdits", label: t("modeAcceptEdits") },
-            { id: "bypassPermissions", label: "Bypass" },
-          ];
+    const modes: AgentMode[] =
+      currentProviderEntry !== null
+        ? providerModes
+        : effectiveProvider === "claude"
+          ? [
+              { id: "auto", label: t("modeAuto"), icon: "ShieldCheck" },
+              { id: "plan", label: t("modePlan"), icon: "ShieldEllipsis" },
+              { id: "default", label: t("modeDefault"), icon: "Shield" },
+              { id: "acceptEdits", label: t("modeAcceptEdits"), icon: "ShieldPlus" },
+              { id: "bypassPermissions", label: "Bypass", icon: "ShieldOff" },
+            ]
+          : [];
+
     return modes.map((m) => ({
       id: m.id,
       label: m.label,
       subtitle: m.description,
+      icon: resolveModeIconName(m.id, m.icon),
       selected: m.id === effectiveModeId,
       onSelect: () => {
         if (activeSideAgentId && sideComposer) {
@@ -997,8 +1209,9 @@ function SidechatSurface({
       },
     }));
   }, [
+    currentProviderEntry,
+    providerModes,
     effectiveProvider,
-    availableClaudeModes,
     effectiveModeId,
     activeSideAgentId,
     sideComposer,
@@ -1007,16 +1220,28 @@ function SidechatSurface({
     toast,
   ]);
 
-  const handleToggleFastMode = useCallback(() => {
-    const next = !fastModeEnabled;
-    if (activeSideAgentId && sideComposer) {
-      void sideComposer.setOptions({ fast_mode: next }).catch((err) => {
-        toast.error(err instanceof Error ? err.message : "Fast mode is not available");
-      });
-    } else {
-      patchTabState({ draftFastMode: next });
-    }
-  }, [fastModeEnabled, activeSideAgentId, sideComposer, patchTabState, toast]);
+  const handleSetOption = useCallback(
+    (key: string, value: JsonValue) => {
+      if (activeSideAgentId && sideComposer) {
+        void sideComposer.setOptions({ [key]: value }).catch((err) => {
+          toast.error(err instanceof Error ? err.message : "Option is not supported by this model");
+        });
+      } else {
+        const safePrimitive =
+          typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean" ||
+          value === null
+            ? value
+            : String(value);
+        patchTabState({
+          draftOptions: { ...latestTabStateRef.current.draftOptions, [key]: safePrimitive },
+          ...(key === "fast_mode" && typeof value === "boolean" ? { draftFastMode: value } : {}),
+        });
+      }
+    },
+    [activeSideAgentId, sideComposer, patchTabState, toast],
+  );
 
   const activeThreadTitle = activeSideAgentId
     ? activeThreadFromList?.title || t("untitledThread")
@@ -1060,8 +1285,16 @@ function SidechatSurface({
   const selectedThinkingLabel =
     thinkingOptions.find((o) => o.id === effectiveThinkingId)?.label || effectiveThinkingId || null;
 
+  const selectedModeObj = useMemo(
+    () => providerModes.find((m) => m.id === effectiveModeId) ?? null,
+    [providerModes, effectiveModeId],
+  );
+
   const selectedModeLabel =
-    modeMenuOptions.find((m) => m.id === effectiveModeId)?.label || effectiveModeId || null;
+    selectedModeObj?.label ||
+    modeMenuOptions.find((m) => m.id === effectiveModeId)?.label ||
+    effectiveModeId ||
+    null;
 
   return (
     <View
@@ -1463,6 +1696,7 @@ function SidechatSurface({
         }}
         onClearQuote={() => setAttachedQuote(null)}
         effectiveProvider={effectiveProvider}
+        providerIconSvg={currentProviderEntry?.iconSvg ?? null}
         selectedModelRawLabel={selectedModelLabel}
         modelMaxTokens={currentModelDef?.contextWindowMaxTokens ?? null}
         modelMenuOptions={modelMenuOptions}
@@ -1470,10 +1704,11 @@ function SidechatSurface({
         thinkingMenuOptions={thinkingMenuOptions}
         effectiveModeId={effectiveModeId}
         selectedModeRawLabel={selectedModeLabel}
+        selectedModeIconName={selectedModeObj?.icon ?? null}
         modeMenuOptions={modeMenuOptions}
-        fastModeEnabled={fastModeEnabled}
-        showFastModeToggle={effectiveProvider === "claude"}
-        onToggleFastMode={handleToggleFastMode}
+        optionControls={optionControls}
+        effectiveOptions={effectiveOptions}
+        onSetOption={handleSetOption}
         lastUsage={lastUsage}
       />
 

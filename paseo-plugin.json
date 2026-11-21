@@ -1,7 +1,7 @@
 {
   "id": "paseo-better-sidechat",
   "name": "Better Sidechat",
-  "description": "Contextual Claude sidechat for Paseo with full host theme, thinking, and collapse settings adaptation.",
+  "description": "Universal AI sidechat for Paseo supporting Claude, Codex, Copilot, OpenCode, Kimi, and all Paseo providers — synced with host theme, language, thinking, and collapse settings.",
   "media": [],
   "requirements": {
     "paseo": ">=0.16.0"

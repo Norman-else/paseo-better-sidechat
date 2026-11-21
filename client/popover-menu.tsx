@@ -8,7 +8,9 @@ export interface MenuOption {
   id: string;
   label: string;
   subtitle?: string | null;
+  section?: string | null;
   icon?: string;
+  iconSvg?: string | null;
   selected?: boolean;
   danger?: boolean;
   onSelect(): void;
@@ -61,76 +63,107 @@ export function PopoverMenu({
           </Text>
         </View>
       ) : (
-        options.map((opt) => (
-          <Pressable
-            key={opt.id}
-            accessibilityRole="menuitem"
-            accessibilityLabel={opt.label}
-            accessibilityState={{ selected: Boolean(opt.selected) }}
-            onPress={() => {
-              onOpenChange(false);
-              opt.onSelect();
-            }}
-            style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-              {
-                minHeight: rowHeight,
-                paddingHorizontal: 10,
-                paddingVertical: 6,
-                marginHorizontal: 4,
-                borderRadius: 6,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                backgroundColor:
-                  pressed || hovered
-                    ? colors.surface2
-                    : opt.selected
-                      ? colors.surface1
-                      : "transparent",
-              },
-              pointerCursorStyle,
-            ]}
-          >
-            {opt.icon ? (
-              <Icon
-                name={opt.icon}
-                size={14}
-                color={
-                  opt.danger
-                    ? colors.statusDanger
-                    : opt.selected
-                      ? colors.accent
-                      : colors.foregroundMuted
-                }
-              />
-            ) : null}
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text
-                numberOfLines={1}
-                style={{
-                  fontSize: uiFontSize,
-                  fontWeight: opt.selected ? "600" : "400",
-                  color: opt.danger ? colors.statusDanger : colors.foreground,
-                }}
-              >
-                {opt.label}
-              </Text>
-              {opt.subtitle ? (
-                <Text
-                  numberOfLines={1}
+        options.map((opt, idx) => {
+          const prevSection = idx > 0 ? options[idx - 1].section : null;
+          const showSectionHeader = Boolean(opt.section && opt.section !== prevSection);
+          const iconColor = opt.danger
+            ? colors.statusDanger
+            : opt.selected
+              ? colors.accent
+              : colors.foregroundMuted;
+
+          return (
+            <View key={opt.id}>
+              {showSectionHeader ? (
+                <View
                   style={{
-                    fontSize: Math.max(10, uiFontSize - 2),
-                    color: colors.foregroundMuted,
-                    marginTop: 1,
+                    paddingHorizontal: 12,
+                    paddingTop: idx > 0 ? 8 : 4,
+                    paddingBottom: 3,
+                    ...(idx > 0
+                      ? {
+                          marginTop: 4,
+                          borderTopWidth: 1,
+                          borderTopColor: colors.border,
+                        }
+                      : {}),
                   }}
                 >
-                  {opt.subtitle}
-                </Text>
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      fontSize: Math.max(10, uiFontSize - 2),
+                      fontWeight: "600",
+                      color: colors.foregroundMuted,
+                    }}
+                  >
+                    {opt.section}
+                  </Text>
+                </View>
               ) : null}
+
+              <Pressable
+                accessibilityRole="menuitem"
+                accessibilityLabel={opt.label}
+                accessibilityState={{ selected: Boolean(opt.selected) }}
+                onPress={() => {
+                  onOpenChange(false);
+                  opt.onSelect();
+                }}
+                style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                  {
+                    minHeight: rowHeight,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    marginHorizontal: 4,
+                    borderRadius: 6,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    backgroundColor:
+                      pressed || hovered
+                        ? colors.surface2
+                        : opt.selected
+                          ? colors.surface1
+                          : "transparent",
+                  },
+                  pointerCursorStyle,
+                ]}
+              >
+                {opt.iconSvg ? (
+                  <Icon icon={{ svg: opt.iconSvg }} size={14} color={iconColor} />
+                ) : opt.icon ? (
+                  <Icon name={opt.icon} size={14} color={iconColor} />
+                ) : null}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      fontSize: uiFontSize,
+                      fontWeight: opt.selected ? "600" : "400",
+                      color: opt.danger ? colors.statusDanger : colors.foreground,
+                    }}
+                  >
+                    {opt.label}
+                  </Text>
+                  {opt.subtitle ? (
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        fontSize: Math.max(10, uiFontSize - 2),
+                        color: colors.foregroundMuted,
+                        marginTop: 1,
+                      }}
+                    >
+                      {opt.subtitle}
+                    </Text>
+                  ) : null}
+                </View>
+                {opt.selected ? <Icon name="Check" size={14} color={colors.accent} /> : null}
+              </Pressable>
             </View>
-            {opt.selected ? <Icon name="Check" size={14} color={colors.accent} /> : null}
-          </Pressable>
-        ))
+          );
+        })
       )}
     </View>
   );
@@ -142,11 +175,13 @@ export function PopoverMenu({
         <View
           style={{
             position: "absolute",
-            ...(placement === "top" ? { bottom: "100%", marginBottom: 6 } : { top: "100%", marginTop: 6 }),
+            ...(placement === "top"
+              ? { bottom: "100%", marginBottom: 6 }
+              : { top: "100%", marginTop: 6 }),
             ...(anchor === "right" ? { right: 0 } : { left: 0 }),
-            minWidth: 220,
+            minWidth: 230,
             maxWidth: 320,
-            maxHeight: 320,
+            maxHeight: 340,
             backgroundColor: colors.surface1,
             borderWidth: 1,
             borderColor: colors.border,
@@ -182,14 +217,16 @@ export function PopoverMenu({
             </Text>
             {headerAction}
           </View>
-          <ScrollView style={{ maxHeight: 270 }}>{renderRows()}</ScrollView>
+          <ScrollView style={{ maxHeight: 290 }}>{renderRows()}</ScrollView>
         </View>
       ) : null}
 
       {useSheet ? (
         <Modal title={title} open={open} onOpenChange={onOpenChange}>
           <Modal.Content scrollable contentContainerStyle={{ padding: 8, gap: 4 }}>
-            {headerAction ? <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}>{headerAction}</View> : null}
+            {headerAction ? (
+              <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}>{headerAction}</View>
+            ) : null}
             {renderRows()}
           </Modal.Content>
         </Modal>

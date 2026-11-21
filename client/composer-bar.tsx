@@ -1,6 +1,10 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, TextInput, useToast } from "@getpaseo/plugin/client/ui";
-import type { AgentUsage } from "@getpaseo/protocol/agent-types";
+import type {
+  AgentOptionControl,
+  AgentUsage,
+  JsonValue,
+} from "@getpaseo/protocol/agent-types";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
@@ -10,13 +14,13 @@ import {
 } from "../shared/appearance";
 import {
   buildContextRingSvg,
-  CLAUDE_ICON_SVG,
   formatContextUsageSummary,
   formatShortModelLabel,
   formatShortModeLabel,
   formatShortThinkingLabel,
   resolveContextUsageRatio,
   resolveModeIconName,
+  resolveProviderIconSvg,
   resolveToolbarDensity,
 } from "../shared/composer-controls";
 import type { useMessages } from "./messages";
@@ -57,8 +61,9 @@ export interface SidechatComposerBarProps {
   onAttachCandidateSelection(): void;
   onClearQuote(): void;
 
-  // Agent controls (Model, Thinking, Mode, Fast Mode, Context Window Meter)
+  // Universal Multi-Provider Agent Controls
   effectiveProvider: string;
+  providerIconSvg: string | null;
   selectedModelRawLabel: string | null;
   modelMaxTokens: number | null;
   modelMenuOptions: readonly MenuOption[];
@@ -66,10 +71,11 @@ export interface SidechatComposerBarProps {
   thinkingMenuOptions: readonly MenuOption[];
   effectiveModeId: string | null;
   selectedModeRawLabel: string | null;
+  selectedModeIconName: string | null;
   modeMenuOptions: readonly MenuOption[];
-  fastModeEnabled: boolean;
-  showFastModeToggle: boolean;
-  onToggleFastMode(): void;
+  optionControls: readonly AgentOptionControl[];
+  effectiveOptions: Readonly<Record<string, JsonValue>>;
+  onSetOption(key: string, value: JsonValue): void;
   lastUsage: AgentUsage | null;
 }
 
@@ -97,6 +103,7 @@ export function SidechatComposerBar({
   onAttachCandidateSelection,
   onClearQuote,
   effectiveProvider,
+  providerIconSvg,
   selectedModelRawLabel,
   modelMaxTokens,
   modelMenuOptions,
@@ -104,10 +111,11 @@ export function SidechatComposerBar({
   thinkingMenuOptions,
   effectiveModeId,
   selectedModeRawLabel,
+  selectedModeIconName,
   modeMenuOptions,
-  fastModeEnabled,
-  showFastModeToggle,
-  onToggleFastMode,
+  optionControls,
+  effectiveOptions,
+  onSetOption,
   lastUsage,
 }: SidechatComposerBarProps) {
   const { colors } = theme;
@@ -117,6 +125,7 @@ export function SidechatComposerBar({
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [openSelectOptionKey, setOpenSelectOptionKey] = useState<string | null>(null);
 
   // Paseo exact toolbar geometry tokens
   const discSize = isTouch ? 36 : 28;
@@ -127,10 +136,14 @@ export function SidechatComposerBar({
   const density = resolveToolbarDensity(panelWidth, isTouch);
   const compact = isTouch || panelWidth < 460;
 
+  const resolvedProviderSvg = useMemo(
+    () => resolveProviderIconSvg(effectiveProvider, providerIconSvg),
+    [effectiveProvider, providerIconSvg],
+  );
   const shortModel = formatShortModelLabel(selectedModelRawLabel, t("modelLabel"));
   const shortThinking = formatShortThinkingLabel(selectedThinkingRawLabel, t("thinkingDefault"));
   const shortMode = formatShortModeLabel(effectiveModeId, selectedModeRawLabel);
-  const modeIcon = resolveModeIconName(effectiveModeId);
+  const modeIcon = resolveModeIconName(effectiveModeId, selectedModeIconName);
 
   const showThinkingLabel = density === "full";
   const showModeLabel = density !== "iconOnly";
@@ -408,7 +421,7 @@ export function SidechatComposerBar({
           ]}
         />
 
-        {/* Paseo Bottom Toolbar Row: [+][✳ Opus 5.5 ∨][🧠 Low ∨][🛡️ Bypass ∨][⚡]  ...  [◯][↑/■] */}
+        {/* Paseo Bottom Toolbar Row */}
         <View
           style={{
             minHeight: discSize,
@@ -471,7 +484,7 @@ export function SidechatComposerBar({
               />
             ) : null}
 
-            {/* 2. Model Selector Pill (`[ ✳ Opus 5.5 ∨ ]` with Paseo filled pill surface) */}
+            {/* 2. Universal Provider + Model Selector Pill */}
             {modelMenuOptions.length > 0 ? (
               <PopoverMenu
                 title={t("modelLabel")}
@@ -490,7 +503,7 @@ export function SidechatComposerBar({
                     style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
                       {
                         height: discSize,
-                        maxWidth: density === "iconOnly" ? 115 : 148,
+                        maxWidth: density === "iconOnly" ? 115 : 152,
                         paddingHorizontal: 9,
                         borderRadius: 999,
                         flexDirection: "row",
@@ -504,9 +517,9 @@ export function SidechatComposerBar({
                       pointerCursorStyle,
                     ]}
                   >
-                    {effectiveProvider === "claude" ? (
+                    {resolvedProviderSvg ? (
                       <Icon
-                        icon={{ svg: CLAUDE_ICON_SVG }}
+                        icon={{ svg: resolvedProviderSvg }}
                         size={glyphSize - 1}
                         color={colors.foregroundMuted}
                       />
@@ -529,7 +542,7 @@ export function SidechatComposerBar({
               />
             ) : null}
 
-            {/* 3. Thinking Effort Ghost Pill (`🧠 Low ∨`) */}
+            {/* 3. Thinking Effort Ghost Pill */}
             {thinkingMenuOptions.length > 0 ? (
               <PopoverMenu
                 title={t("thinkingLabel")}
@@ -583,86 +596,169 @@ export function SidechatComposerBar({
               />
             ) : null}
 
-            {/* 4. Mode Ghost Pill (`🛡️ Bypass ∨`) */}
-            <PopoverMenu
-              title={t("modeLabel")}
-              open={modeMenuOpen}
-              onOpenChange={setModeMenuOpen}
-              placement="top"
-              theme={theme}
-              compact={compact}
-              uiFontSize={appearance.uiBaseFontSize}
-              options={modeMenuOptions}
-              trigger={
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`${t("modeLabel")}: ${shortMode}`}
-                  onPress={() => setModeMenuOpen((v) => !v)}
-                  style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                    {
-                      height: discSize,
-                      paddingHorizontal: showModeLabel ? 8 : 6,
-                      borderRadius: 999,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 4,
-                      backgroundColor:
-                        modeMenuOpen || pressed || hovered ? colors.surface2 : "transparent",
-                    },
-                    pointerCursorStyle,
-                  ]}
-                >
-                  <Icon
-                    name={modeIcon}
-                    size={glyphSize}
-                    color={modeMenuOpen ? colors.foreground : colors.foregroundMuted}
-                  />
-                  {showModeLabel ? (
-                    <Text
-                      numberOfLines={1}
-                      style={{
-                        fontSize: labelFontSize,
-                        color: modeMenuOpen ? colors.foreground : colors.foregroundMuted,
-                      }}
-                    >
-                      {shortMode}
-                    </Text>
-                  ) : null}
-                  <Icon name="ChevronDown" size={caretSize} color={colors.foregroundMuted} />
-                </Pressable>
-              }
-            />
-
-            {/* 5. Claude Fast Mode Lightning Bolt (`⚡`) */}
-            {showFastModeToggle ? (
-              <Pressable
-                accessibilityRole="checkbox"
-                accessibilityLabel="Fast mode"
-                accessibilityState={{ checked: fastModeEnabled }}
-                onPress={onToggleFastMode}
-                style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
-                  {
-                    width: discSize,
-                    height: discSize,
-                    borderRadius: 999,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: fastModeEnabled
-                      ? palette.warningSoftBg
-                      : pressed || hovered
-                        ? colors.surface2
-                        : "transparent",
-                  },
-                  pointerCursorStyle,
-                ]}
-              >
-                <Icon
-                  name="Zap"
-                  size={glyphSize}
-                  color={fastModeEnabled ? colors.statusWarning : colors.foregroundMuted}
-                />
-              </Pressable>
+            {/* 4. Mode Ghost Pill (automatically hidden if provider has no modes) */}
+            {modeMenuOptions.length > 0 ? (
+              <PopoverMenu
+                title={t("modeLabel")}
+                open={modeMenuOpen}
+                onOpenChange={setModeMenuOpen}
+                placement="top"
+                theme={theme}
+                compact={compact}
+                uiFontSize={appearance.uiBaseFontSize}
+                options={modeMenuOptions}
+                trigger={
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${t("modeLabel")}: ${shortMode}`}
+                    onPress={() => setModeMenuOpen((v) => !v)}
+                    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                      {
+                        height: discSize,
+                        paddingHorizontal: showModeLabel ? 8 : 6,
+                        borderRadius: 999,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 4,
+                        backgroundColor:
+                          modeMenuOpen || pressed || hovered ? colors.surface2 : "transparent",
+                      },
+                      pointerCursorStyle,
+                    ]}
+                  >
+                    <Icon
+                      name={modeIcon}
+                      size={glyphSize}
+                      color={modeMenuOpen ? colors.foreground : colors.foregroundMuted}
+                    />
+                    {showModeLabel ? (
+                      <Text
+                        numberOfLines={1}
+                        style={{
+                          fontSize: labelFontSize,
+                          color: modeMenuOpen ? colors.foreground : colors.foregroundMuted,
+                        }}
+                      >
+                        {shortMode}
+                      </Text>
+                    ) : null}
+                    <Icon name="ChevronDown" size={caretSize} color={colors.foregroundMuted} />
+                  </Pressable>
+                }
+              />
             ) : null}
+
+            {/* 5. Provider Option Controls (e.g. Claude Fast Mode `⚡`, Codex controls, etc.) */}
+            {optionControls.map((ctrl) => {
+              if (ctrl.type === "toggle") {
+                const rawVal = effectiveOptions[ctrl.key];
+                const checked =
+                  typeof rawVal === "boolean" ? rawVal : Boolean(ctrl.defaultValue);
+                const iconName = ctrl.icon || (ctrl.key === "fast_mode" ? "Zap" : "SlidersHorizontal");
+                return (
+                  <Pressable
+                    key={ctrl.key}
+                    accessibilityRole="checkbox"
+                    accessibilityLabel={ctrl.label}
+                    accessibilityState={{ checked }}
+                    onPress={() => onSetOption(ctrl.key, !checked)}
+                    style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                      {
+                        width: discSize,
+                        height: discSize,
+                        borderRadius: 999,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: checked
+                          ? palette.warningSoftBg
+                          : pressed || hovered
+                            ? colors.surface2
+                            : "transparent",
+                      },
+                      pointerCursorStyle,
+                    ]}
+                  >
+                    <Icon
+                      name={iconName}
+                      size={glyphSize}
+                      color={checked ? colors.statusWarning : colors.foregroundMuted}
+                    />
+                  </Pressable>
+                );
+              }
+
+              // Select control
+              const rawVal = effectiveOptions[ctrl.key];
+              const activeVal =
+                typeof rawVal === "string"
+                  ? rawVal
+                  : (ctrl.defaultValue ?? ctrl.choices[0]?.value ?? "");
+              const activeChoice = ctrl.choices.find((c) => c.value === activeVal);
+              const isOpen = openSelectOptionKey === ctrl.key;
+              const showSelectLabel =
+                ctrl.desktopTrigger !== "icon" && density === "full";
+              const selectOptions: MenuOption[] = ctrl.choices.map((ch) => ({
+                id: ch.value,
+                label: ch.label,
+                subtitle: ch.description,
+                selected: ch.value === activeVal,
+                onSelect: () => onSetOption(ctrl.key, ch.value),
+              }));
+
+              return (
+                <PopoverMenu
+                  key={ctrl.key}
+                  title={ctrl.label}
+                  open={isOpen}
+                  onOpenChange={(next) => setOpenSelectOptionKey(next ? ctrl.key : null)}
+                  placement="top"
+                  theme={theme}
+                  compact={compact}
+                  uiFontSize={appearance.uiBaseFontSize}
+                  options={selectOptions}
+                  trigger={
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${ctrl.label}: ${activeChoice?.label ?? activeVal}`}
+                      onPress={() =>
+                        setOpenSelectOptionKey((prev) => (prev === ctrl.key ? null : ctrl.key))
+                      }
+                      style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
+                        {
+                          height: discSize,
+                          paddingHorizontal: showSelectLabel ? 8 : 6,
+                          borderRadius: 999,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 4,
+                          backgroundColor:
+                            isOpen || pressed || hovered ? colors.surface2 : "transparent",
+                        },
+                        pointerCursorStyle,
+                      ]}
+                    >
+                      <Icon
+                        name={ctrl.icon || "SlidersHorizontal"}
+                        size={glyphSize}
+                        color={isOpen ? colors.foreground : colors.foregroundMuted}
+                      />
+                      {showSelectLabel ? (
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            fontSize: labelFontSize,
+                            color: isOpen ? colors.foreground : colors.foregroundMuted,
+                          }}
+                        >
+                          {activeChoice?.label ?? ctrl.label}
+                        </Text>
+                      ) : null}
+                      <Icon name="ChevronDown" size={caretSize} color={colors.foregroundMuted} />
+                    </Pressable>
+                  }
+                />
+              );
+            })}
           </View>
 
           {/* Right Controls: Context Window Meter Ring + Send / Stop Disc */}
