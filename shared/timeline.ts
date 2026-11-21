@@ -255,6 +255,7 @@ export function fromTimelineSnapshot(
   const activeTurnId = snapshot.agent?.activeTurn?.turnId ?? null;
   const items: SidechatItem[] = [];
   const seenClientIds = new Set<string>();
+  const seenUserBodies = new Set<string>();
 
   snapshot.entries.forEach((entry, index) => {
     const isLast = index === snapshot.entries.length - 1;
@@ -264,14 +265,14 @@ export function fromTimelineSnapshot(
     switch (item.type) {
       case "user_message": {
         if (item.clientMessageId) seenClientIds.add(item.clientMessageId);
-        items.push(
-          makeUserItem(item.messageId ? `msg:${item.messageId}` : baseId, item.text, {
-            messageId: item.messageId,
-            clientMessageId: item.clientMessageId,
-            turnId,
-            timestamp,
-          }),
-        );
+        const userItem = makeUserItem(item.messageId ? `msg:${item.messageId}` : baseId, item.text, {
+          messageId: item.messageId,
+          clientMessageId: item.clientMessageId,
+          turnId,
+          timestamp,
+        });
+        seenUserBodies.add(userItem.body);
+        items.push(userItem);
         break;
       }
       case "assistant_message": {
@@ -300,6 +301,20 @@ export function fromTimelineSnapshot(
       }
       case "tool_call": {
         const normalized = item.name.trim().replace(/[.\s-]+/g, "_").toLowerCase();
+        // Paseo records parent->child initial prompts as `tool_call` with `agentMessage`.
+        if (item.agentMessage || normalized === "agent_message" || normalized === "heartbeat") {
+          if (item.agentMessage?.event === "message" && item.agentMessage.text.trim()) {
+            const userItem = makeUserItem(`agent_msg:${item.callId}`, item.agentMessage.text, {
+              turnId,
+              timestamp,
+            });
+            if (!seenUserBodies.has(userItem.body)) {
+              seenUserBodies.add(userItem.body);
+              items.push(userItem);
+            }
+          }
+          break;
+        }
         if (
           entry.provider === "claude" &&
           (normalized === "taskcreate" || normalized === "taskupdate" || normalized === "tasklist")
@@ -370,6 +385,7 @@ export function fromTimelineSnapshot(
   // Preserve any in-flight optimistic user messages not yet echoed in the snapshot.
   for (const pending of previousOptimistic) {
     if (pending.clientMessageId && seenClientIds.has(pending.clientMessageId)) continue;
+    if (seenUserBodies.has(pending.body)) continue;
     items.push(pending);
   }
 
@@ -594,6 +610,45 @@ export function applyTimelineStreamEvent(
 
       if (item.type === "tool_call") {
         const normalized = item.name.trim().replace(/[.\s-]+/g, "_").toLowerCase();
+        if (item.agentMessage || normalized === "agent_message" || normalized === "heartbeat") {
+          if (item.agentMessage?.event === "message" && item.agentMessage.text.trim()) {
+            const baseItems = settleThoughtsAndStreaming(state.items, true);
+            const confirmed = makeUserItem(`agent_msg:${item.callId}`, item.agentMessage.text, {
+              turnId,
+              timestamp,
+              optimistic: false,
+            });
+            const optimisticIdx = baseItems.findIndex(
+              (entry) =>
+                entry.kind === "user_message" &&
+                (Boolean(entry.optimistic) || entry.id === confirmed.id) &&
+                entry.body === confirmed.body,
+            );
+            if (optimisticIdx >= 0) {
+              const nextItems = [...baseItems];
+              nextItems[optimisticIdx] = confirmed;
+              return {
+                state: { ...state, epoch: nextEpoch, maxSeq: nextMaxSeq, items: nextItems },
+                needsRefetch: false,
+              };
+            }
+            const alreadyExists = baseItems.some(
+              (entry) => entry.kind === "user_message" && entry.body === confirmed.body && entry.turnId === turnId,
+            );
+            if (!alreadyExists) {
+              return {
+                state: {
+                  ...state,
+                  epoch: nextEpoch,
+                  maxSeq: nextMaxSeq,
+                  items: [...baseItems, confirmed],
+                },
+                needsRefetch: false,
+              };
+            }
+          }
+          return { state: { ...state, epoch: nextEpoch, maxSeq: nextMaxSeq }, needsRefetch: false };
+        }
         if (
           event.provider === "claude" &&
           (normalized === "taskcreate" || normalized === "taskupdate" || normalized === "tasklist")

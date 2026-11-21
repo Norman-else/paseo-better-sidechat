@@ -667,7 +667,7 @@ function SidechatSurface({
         patchTabState({ sideAgentId: null, contextOverride: null });
         setTimelineState(createEmptyTimelineState());
       } else if (intent.kind === "prompt" && intent.text.trim()) {
-        void sendPromptRef.current(intent.text, { forceNewThread: true });
+        void sendPromptRef.current(intent.text);
       }
     };
     processPending();

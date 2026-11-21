@@ -2,6 +2,7 @@ import type {
   PluginButtonRegistration,
   PluginClientContext,
   PluginText,
+  PluginWorkspaceCommandContext,
 } from "@getpaseo/plugin/client";
 import {
   enqueueSidechatHandoff,
@@ -16,6 +17,20 @@ import {
 import { preferencesRpc } from "./shared/contracts";
 
 export default function contribute(client: PluginClientContext) {
+  type ObservedAgent = {
+    id: string;
+    workspaceId?: string | null;
+    background?: boolean;
+    archivedAt?: string | null;
+    updatedAt?: string;
+    labels?: Record<string, string>;
+  };
+
+  const pills = new Map<string, PluginButtonRegistration<PluginText>>();
+  const knownAgents = new Map<string, ObservedAgent>();
+  let pillEnabled = true;
+  const lifetime = new AbortController();
+
   client.addAgentPanel({
     id: "better-sidechat",
     title: messages.message("panelTitle"),
@@ -43,7 +58,7 @@ export default function contribute(client: PluginClientContext) {
     id: "open-sidechat",
     title: messages.message("openSidechat"),
     icon: "MessagesSquare",
-    keywords: ["sidechat", "claude", "side", "chat", "ask", "侧边", "聊天", "提问"],
+    keywords: ["btw", "sidechat", "claude", "side", "chat", "ask", "侧边", "聊天", "提问"],
     context: "agent",
     onSelect: ({ openPanel }) => {
       openPanel("better-sidechat", { location: "explorer" });
@@ -54,7 +69,7 @@ export default function contribute(client: PluginClientContext) {
     id: "new-sidechat",
     title: messages.message("newSidechat"),
     icon: "SquarePen",
-    keywords: ["sidechat", "new", "claude", "新建", "侧边", "聊天"],
+    keywords: ["btw", "sidechat", "new", "claude", "新建", "侧边", "聊天"],
     context: "agent",
     onSelect: ({ openPanel, workspace, agent }) => {
       enqueueSidechatHandoff(
@@ -69,43 +84,84 @@ export default function contribute(client: PluginClientContext) {
     id: "open-workspace-sidechat",
     title: messages.message("workspacePanelTitle"),
     icon: "MessagesSquare",
-    keywords: ["sidechat", "workspace", "claude", "侧边", "工作区"],
+    keywords: ["btw", "sidechat", "workspace", "claude", "侧边", "工作区"],
     context: "workspace",
     onSelect: ({ openPanel }) => {
       openPanel("workspace-sidechat", { location: "explorer" });
     },
   });
 
+  // Shared slash handler for `/btw` and `/sidechat`.
+  // Registered with `context: "workspace"` so it works in BOTH active agent tabs and brand-new draft tabs!
+  const handleSidechatSlash = ({
+    workspace,
+    composers,
+    openPanel,
+    args,
+  }: PluginWorkspaceCommandContext & { args: string }) => {
+    const promptText = args.trim();
+    const focused = composers({ focused: true })[0] ?? null;
+    let targetAgentId: string | null = null;
+
+    if (focused?.context === "agent") {
+      for (const agent of knownAgents.values()) {
+        if (agent.workspaceId !== workspace.id) continue;
+        if (composers({ agentId: agent.id })[0] === focused) {
+          targetAgentId = agent.id;
+          break;
+        }
+      }
+    }
+
+    if (!targetAgentId) {
+      let latest: ObservedAgent | null = null;
+      for (const agent of knownAgents.values()) {
+        const isForeground =
+          agent.workspaceId === workspace.id &&
+          !agent.background &&
+          !agent.archivedAt &&
+          agent.labels?.["paseo-better-sidechat"] !== "1";
+        if (!isForeground) continue;
+        if (!latest || (agent.updatedAt ?? "") > (latest.updatedAt ?? "")) {
+          latest = agent;
+        }
+      }
+      targetAgentId = latest?.id ?? null;
+    }
+
+    if (promptText) {
+      enqueueSidechatHandoff(
+        { workspaceId: workspace.id, agentId: targetAgentId },
+        { kind: "prompt", text: promptText },
+      );
+    }
+
+    if (targetAgentId) {
+      client.openPanel("better-sidechat", {
+        workspaceId: workspace.id,
+        agentId: targetAgentId,
+        location: "explorer",
+      });
+    } else {
+      openPanel("workspace-sidechat", { location: "explorer" });
+    }
+  };
+
+  client.addSlashCommand({
+    name: "btw",
+    description: messages.message("slashDescription"),
+    argumentHint: messages.message("slashHint"),
+    context: "workspace",
+    onSubmit: handleSidechatSlash,
+  });
+
   client.addSlashCommand({
     name: "sidechat",
     description: messages.message("slashDescription"),
     argumentHint: messages.message("slashHint"),
-    context: "agent",
-    onSubmit: ({ openPanel, args, workspace, agent }) => {
-      const promptText = args.trim();
-      if (promptText) {
-        enqueueSidechatHandoff(
-          { workspaceId: workspace.id, agentId: agent.id },
-          { kind: "prompt", text: promptText },
-        );
-      }
-      openPanel("better-sidechat", { location: "explorer" });
-    },
+    context: "workspace",
+    onSubmit: handleSidechatSlash,
   });
-
-  // Register a one-click Sidechat pill on active foreground main sessions.
-  const pills = new Map<string, PluginButtonRegistration<PluginText>>();
-  const knownAgents = new Map<string, ObservedAgent>();
-  let pillEnabled = true;
-  const lifetime = new AbortController();
-
-  type ObservedAgent = {
-    id: string;
-    workspaceId?: string | null;
-    background?: boolean;
-    archivedAt?: string | null;
-    labels?: Record<string, string>;
-  };
 
   const syncAgentPill = (agent: ObservedAgent) => {
     if (lifetime.signal.aborted) return;

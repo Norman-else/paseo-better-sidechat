@@ -250,3 +250,52 @@ test("projectTimelineRows adapts accurately to full, collapseToolCalls, collapse
   assert.equal(outline.length, 1);
   assert.equal(outline[0].preview, "Inspect auth flow");
 });
+
+test("fromTimelineSnapshot converts Paseo parent->child agent_message tool_call into clean user_message without duplicating optimistic bubble", () => {
+  const optimistic = appendOptimisticUserMessage(createEmptyTimelineState(), {
+    text: "给我随便画个流程图我看下显示",
+    clientMessageId: "c-init",
+    timestamp: "2026-11-21T02:00:00Z",
+  });
+  const optimisticUser = optimistic.items[0];
+  assert.equal(optimisticUser.kind, "user_message");
+
+  const snapshot = fromTimelineSnapshot(
+    {
+      epoch: "e1",
+      window: { minSeq: 0, maxSeq: 3, nextSeq: 4 },
+      agent: { status: "idle", activeTurn: null },
+      entries: [
+        {
+          provider: "claude",
+          turnId: "t1",
+          timestamp: "2026-11-21T02:00:01Z",
+          seqStart: 1,
+          seqEnd: 1,
+          item: {
+            type: "tool_call",
+            callId: "msg-call-1",
+            name: "agent_message",
+            status: "completed",
+            error: null,
+            detail: { type: "plain_text", text: "给我随便画个流程图我看下显示" },
+            agentMessage: {
+              event: "message",
+              sender: { id: "parent-1" },
+              text: "<sidechat_context>\nMain session: finance\n</sidechat_context>\n\n给我随便画个流程图我看下显示",
+            },
+          },
+        },
+      ],
+    },
+    optimisticUser.kind === "user_message" ? [optimisticUser] : [],
+  );
+
+  assert.equal(snapshot.items.length, 1);
+  assert.equal(snapshot.items[0].kind, "user_message");
+  if (snapshot.items[0].kind === "user_message") {
+    assert.equal(snapshot.items[0].body, "给我随便画个流程图我看下显示");
+    assert.equal(snapshot.items[0].mainContext, "Main session: finance");
+    assert.equal(snapshot.items[0].optimistic, undefined);
+  }
+});
