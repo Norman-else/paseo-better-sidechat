@@ -7,6 +7,8 @@ import {
   computeMainStarterFingerprint,
   detectConversationLanguage,
   parseAiStarterResponse,
+  resolveStarterHelperSafetyConfig,
+  shouldUseAiStarters,
   type TimelineEntryLike,
 } from "../shared/starters";
 
@@ -379,4 +381,84 @@ test("digest expands immediately preceding turn when the latest assistant reply 
   assert.ok(digest.latestTurnBlock.includes("PSOS-6384 / 6385"));
   assert.ok(digest.earlierBackgroundBlock.includes("M-311271"));
   assert.ok(digest.earlierBackgroundBlock.includes("update_receivable_20261121_003706.csv"));
+});
+
+test("shouldUseAiStarters never contacts an AI provider when starterModelMode is off", () => {
+  assert.equal(shouldUseAiStarters({ starterModelMode: "off", requestedMode: "instant" }), false);
+  assert.equal(shouldUseAiStarters({ starterModelMode: "off", requestedMode: "ai" }), false);
+  assert.equal(shouldUseAiStarters({ starterModelMode: "smart", requestedMode: "instant" }), false);
+  assert.equal(shouldUseAiStarters({ starterModelMode: "smart", requestedMode: "ai" }), true);
+  assert.equal(shouldUseAiStarters({ starterModelMode: "fast", requestedMode: "ai" }), true);
+  assert.equal(shouldUseAiStarters({ starterModelMode: "inherit", requestedMode: "ai" }), true);
+});
+
+test("resolveStarterHelperSafetyConfig disables built-in Claude tools and refuses permissive fallbacks", () => {
+  // Claude: explicitly disables all built-in tools and MCP servers, and uses plan when available.
+  const claudeWithPlan = resolveStarterHelperSafetyConfig({
+    provider: "claude",
+    availableModes: [{ id: "auto" }, { id: "plan" }],
+  });
+  assert.deepEqual(claudeWithPlan, {
+    allowed: true,
+    modeId: "plan",
+    options: {
+      extraArgs: {
+        tools: "",
+        "strict-mcp-config": null,
+      },
+    },
+  });
+
+  // Claude without plan still explicitly disables all built-in tools and MCP servers.
+  const claudeNoModes = resolveStarterHelperSafetyConfig({
+    provider: "claude",
+    availableModes: [],
+  });
+  assert.deepEqual(claudeNoModes, {
+    allowed: true,
+    options: {
+      extraArgs: {
+        tools: "",
+        "strict-mcp-config": null,
+      },
+    },
+  });
+
+  // Non-Claude provider with read-only or plan mode uses only that restrictive mode.
+  assert.deepEqual(
+    resolveStarterHelperSafetyConfig({
+      provider: "codex",
+      availableModes: [{ id: "default" }, { id: "read-only" }, { id: "full-access" }],
+    }),
+    { allowed: true, modeId: "read-only" },
+  );
+  assert.deepEqual(
+    resolveStarterHelperSafetyConfig({
+      provider: "opencode",
+      availableModes: [
+        { id: "https://agentclientprotocol.com/protocol/session-modes#agent" },
+        { id: "https://agentclientprotocol.com/protocol/session-modes#plan" },
+      ],
+    }),
+    {
+      allowed: true,
+      modeId: "https://agentclientprotocol.com/protocol/session-modes#plan",
+    },
+  );
+
+  // Non-Claude provider without a restrictive mode MUST NOT fall back to default/auto/full-access.
+  assert.deepEqual(
+    resolveStarterHelperSafetyConfig({
+      provider: "codex",
+      availableModes: [{ id: "default" }, { id: "auto" }, { id: "full-access" }],
+    }),
+    { allowed: false },
+  );
+  assert.deepEqual(
+    resolveStarterHelperSafetyConfig({
+      provider: "custom-acp",
+      availableModes: [],
+    }),
+    { allowed: false },
+  );
 });

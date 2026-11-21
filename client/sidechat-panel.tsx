@@ -1640,7 +1640,7 @@ function SidechatSurface({
         agentId: mainAgentId,
         workspaceId,
         locale,
-        mode: "ai",
+        mode: requestedStarterMode,
         forceRefresh: true,
       });
       setManualStarterOverride({
@@ -1659,6 +1659,7 @@ function SidechatSurface({
     callStarterSuggestions,
     workspaceId,
     locale,
+    requestedStarterMode,
     starterCacheKey,
   ]);
 

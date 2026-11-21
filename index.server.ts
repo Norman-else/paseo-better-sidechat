@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execCommand, type PluginServerContext } from "@getpaseo/plugin/server";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
@@ -47,6 +47,8 @@ import {
   computeMainStarterFingerprint,
   detectConversationLanguage,
   parseAiStarterResponse,
+  resolveStarterHelperSafetyConfig,
+  shouldUseAiStarters,
   STARTER_GENERATOR_SYSTEM_PROMPT,
   type StarterPromptItem,
 } from "./shared/starters";
@@ -957,7 +959,7 @@ export default function contribute(server: PluginServerContext) {
           fallbackLocale: locale,
         });
 
-        if (starterModelMode === "off" && !forceRefresh) {
+        if (starterModelMode === "off") {
           return {
             starters: contextual,
             source: "contextual",
@@ -967,7 +969,7 @@ export default function contribute(server: PluginServerContext) {
           };
         }
 
-        if (mode === "instant") {
+        if (!shouldUseAiStarters({ starterModelMode, requestedMode: mode })) {
           return {
             starters: contextual,
             source: "contextual",
@@ -977,8 +979,7 @@ export default function contribute(server: PluginServerContext) {
           };
         }
 
-        const effectiveStarterModelMode: Exclude<StarterModelMode, "off"> =
-          starterModelMode === "off" ? "smart" : starterModelMode;
+        const effectiveStarterModelMode: Exclude<StarterModelMode, "off"> = starterModelMode;
 
         const generateWithModel = async (): Promise<CachedStarterResult | null> => {
           const effectiveCwd = timeline.agent!.cwd || homedir();
@@ -992,12 +993,11 @@ export default function contribute(server: PluginServerContext) {
           });
           if (!picked) return null;
 
-          const resolvedModeId = resolveEffectiveProviderMode({
+          const safety = resolveStarterHelperSafetyConfig({
             provider: picked.provider,
-            defaultPermissionMode: "plan",
             availableModes: picked.providerEntry?.modes,
-            providerDefaultModeId: picked.providerEntry?.defaultModeId,
           });
+          if (!safety.allowed) return null;
 
           const starterDigest = buildRecencyWeightedStarterDigest({
             title: timeline.agent!.title,
@@ -1012,13 +1012,15 @@ export default function contribute(server: PluginServerContext) {
             languageTag,
           });
 
+          let isolatedCwd: string | null = null;
           let tempHandle: Awaited<ReturnType<ServerPaseoApi["agents"]["create"]>> | null = null;
           let tempWorkspaceId: string | null = null;
           let completedCleanly = false;
 
           try {
+            isolatedCwd = mkdtempSync(join(tmpdir(), "paseo-sidechat-starters-"));
             tempHandle = await paseo.agents.create({
-              cwd: effectiveCwd,
+              cwd: isolatedCwd,
               background: true,
               autoArchive: true,
               title: "Sidechat Follow-up Suggestions",
@@ -1027,12 +1029,10 @@ export default function contribute(server: PluginServerContext) {
               },
               config: {
                 provider: picked.providerModel,
-                ...(resolvedModeId ? { modeId: resolvedModeId } : {}),
+                ...(safety.modeId ? { modeId: safety.modeId } : {}),
                 ...(picked.thinkingOptionId ? { thinkingOptionId: picked.thinkingOptionId } : {}),
                 mcpServers: {},
-                ...(picked.provider === "claude"
-                  ? { options: { extraArgs: { "strict-mcp-config": null } } }
-                  : {}),
+                ...(safety.options ? { options: safety.options } : {}),
                 systemPrompt: STARTER_GENERATOR_SYSTEM_PROMPT,
               },
               prompt,
@@ -1094,6 +1094,13 @@ export default function contribute(server: PluginServerContext) {
                   .ref(finalWsId)
                   .archive()
                   .catch(() => {});
+              }
+            }
+            if (isolatedCwd) {
+              try {
+                rmSync(isolatedCwd, { recursive: true, force: true });
+              } catch {
+                // Best-effort cleanup of the empty temporary directory.
               }
             }
           }
