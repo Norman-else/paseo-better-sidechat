@@ -1086,13 +1086,10 @@ export function shouldUseAiStarters(input: {
 }
 
 /**
- * Resolves strict tool-free guardrails for the ephemeral AI follow-up helper so untrusted
- * main-session digests cannot trigger any workspace or file-read tools.
- *
- * Only providers that support enforced tool-free execution (currently Claude via
- * `--tools ""` + `--strict-mcp-config`) are permitted to run the AI helper; providers whose
- * Plan / read-only modes still expose read tools return `{ allowed: false }` so the server
- * cleanly falls back to local contextual extraction.
+ * Resolves tool/mode guardrails for the ephemeral AI follow-up helper.
+ * Runs in an isolated empty temporary directory with `mcpServers: {}`; on Claude it also
+ * explicitly disables built-in tools (`--tools ""` + `--strict-mcp-config`), and on other
+ * providers it prefers `read-only` / `plan` when available.
  */
 export function resolveStarterHelperSafetyConfig(input: {
   provider: string;
@@ -1117,7 +1114,10 @@ export function resolveStarterHelperSafetyConfig(input: {
     };
   }
 
-  return { allowed: false };
+  return {
+    allowed: true,
+    ...(restrictiveModeId ? { modeId: restrictiveModeId } : {}),
+  };
 }
 
 export function buildAiStarterGenerationPrompt(input: {

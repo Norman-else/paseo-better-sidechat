@@ -392,7 +392,7 @@ test("shouldUseAiStarters never contacts an AI provider when starterModelMode is
   assert.equal(shouldUseAiStarters({ starterModelMode: "inherit", requestedMode: "ai" }), true);
 });
 
-test("resolveStarterHelperSafetyConfig only allows enforced tool-free helpers and rejects read-capable modes", () => {
+test("resolveStarterHelperSafetyConfig disables built-in Claude tools and prefers restrictive modes across providers", () => {
   // Claude: explicitly disables all built-in tools and MCP servers, and uses plan when available.
   const claudeWithPlan = resolveStarterHelperSafetyConfig({
     provider: "claude",
@@ -424,14 +424,13 @@ test("resolveStarterHelperSafetyConfig only allows enforced tool-free helpers an
     },
   });
 
-  // Non-Claude providers cannot enforce tool-free access (even in read-only or plan modes),
-  // so they must return allowed: false and fall back to local contextual suggestions.
+  // Non-Claude providers prefer read-only / plan modes when available and remain enabled.
   assert.deepEqual(
     resolveStarterHelperSafetyConfig({
       provider: "codex",
       availableModes: [{ id: "default" }, { id: "read-only" }, { id: "full-access" }],
     }),
-    { allowed: false },
+    { allowed: true, modeId: "read-only" },
   );
   assert.deepEqual(
     resolveStarterHelperSafetyConfig({
@@ -441,13 +440,23 @@ test("resolveStarterHelperSafetyConfig only allows enforced tool-free helpers an
         { id: "https://agentclientprotocol.com/protocol/session-modes#plan" },
       ],
     }),
-    { allowed: false },
+    {
+      allowed: true,
+      modeId: "https://agentclientprotocol.com/protocol/session-modes#plan",
+    },
+  );
+  assert.deepEqual(
+    resolveStarterHelperSafetyConfig({
+      provider: "codex",
+      availableModes: [{ id: "default" }, { id: "auto" }, { id: "full-access" }],
+    }),
+    { allowed: true },
   );
   assert.deepEqual(
     resolveStarterHelperSafetyConfig({
       provider: "custom-acp",
       availableModes: [],
     }),
-    { allowed: false },
+    { allowed: true },
   );
 });
