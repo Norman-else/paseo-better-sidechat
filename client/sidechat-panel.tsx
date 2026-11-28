@@ -96,6 +96,7 @@ import {
   extractPromptOutline,
   fromTimelineSnapshot,
   projectTimelineRows,
+  settleTimelineState,
   type ProjectedRow,
   type SidechatUserItem,
   type TimelineState,
@@ -688,9 +689,12 @@ function SidechatSurface({
         ) {
           return;
         }
-        setTimelineState((prev) =>
-          prev.isTurnActive === running ? prev : { ...prev, isTurnActive: running },
-        );
+        setTimelineState((prev) => {
+          if (running) {
+            return prev.isTurnActive ? prev : { ...prev, isTurnActive: true };
+          }
+          return settleTimelineState(prev, "canceled");
+        });
       }
     });
 
@@ -709,7 +713,7 @@ function SidechatSurface({
           initialSendInFlight = false;
           if (!cancelled) {
             toast.error(error instanceof Error ? error.message : "Failed to send message");
-            setTimelineState((prev) => ({ ...prev, isTurnActive: false }));
+            setTimelineState((prev) => settleTimelineState(prev, "canceled"));
           }
         }
       })();
@@ -917,7 +921,7 @@ function SidechatSurface({
             prependThreadMessage(prev, targetSideAgentId, rollbackItem),
           );
         }
-        setTimelineState((prev) => ({ ...prev, isTurnActive: false }));
+        setTimelineState((prev) => settleTimelineState(prev, "canceled"));
         toast.error(error instanceof Error ? error.message : "Failed to send message");
         return false;
       } finally {
@@ -1230,7 +1234,7 @@ function SidechatSurface({
     if (!activeSideAgentId) return;
     try {
       await paseo.agents.ref(activeSideAgentId).reload();
-      setTimelineState((prev) => ({ ...prev, isTurnActive: false, activeTurnId: null }));
+      setTimelineState((prev) => settleTimelineState(prev, "canceled"));
       toast.show(t("stoppingToast"), { variant: "info" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to stop turn");

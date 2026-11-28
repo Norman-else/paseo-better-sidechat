@@ -248,7 +248,11 @@ function makeUserItem(
   };
 }
 
-function settleThoughtsAndStreaming(items: SidechatItem[], settleStreaming = false): SidechatItem[] {
+function settleThoughtsAndStreaming(
+  items: SidechatItem[],
+  settleStreaming = false,
+  settleRunningToolsAs?: "canceled" | "completed",
+): SidechatItem[] {
   let changed = false;
   const next = items.map((item) => {
     if (item.kind === "thought" && item.status !== "ready") {
@@ -259,9 +263,37 @@ function settleThoughtsAndStreaming(items: SidechatItem[], settleStreaming = fal
       changed = true;
       return { ...item, streaming: false };
     }
+    if (settleRunningToolsAs && item.kind === "tool_call" && item.status === "running") {
+      changed = true;
+      return { ...item, status: settleRunningToolsAs };
+    }
+    if (settleRunningToolsAs && item.kind === "compaction" && item.status === "loading") {
+      changed = true;
+      return { ...item, status: "completed" as const };
+    }
     return item;
   });
   return changed ? next : items;
+}
+
+/**
+ * Settles an active or interrupted timeline state so no thoughts, streaming messages,
+ * compactions, or in-flight tool calls remain stuck in a loading/working state.
+ */
+export function settleTimelineState(
+  state: TimelineState,
+  toolStatus: "canceled" | "completed" = "canceled",
+): TimelineState {
+  const settledItems = settleThoughtsAndStreaming(state.items, true, toolStatus);
+  if (!state.isTurnActive && state.activeTurnId === null && settledItems === state.items) {
+    return state;
+  }
+  return {
+    ...state,
+    isTurnActive: false,
+    activeTurnId: null,
+    items: settledItems,
+  };
 }
 
 function mergeToolStatus(
@@ -467,17 +499,59 @@ export function fromTimelineSnapshot(
     }
   });
 
+  let settledItems: SidechatItem[];
+  if (!isTurnActive) {
+    // When the agent is idle/stopped, any tool_call/compaction still marked running/loading
+    // in the persisted snapshot was interrupted and can never still be executing.
+    settledItems = settleThoughtsAndStreaming(items, true, "canceled");
+  } else {
+    // Even while a new turn is active, settle stale in-flight items from earlier turns.
+    let lastUserIdx = -1;
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      if (items[i].kind === "user_message") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    let changed = false;
+    const next = items.map((item, idx) => {
+      const isStaleTurn =
+        idx < lastUserIdx ||
+        Boolean(activeTurnId && item.turnId && item.turnId !== activeTurnId);
+      if (!isStaleTurn) return item;
+      if (item.kind === "thought" && item.status !== "ready") {
+        changed = true;
+        return { ...item, status: "ready" as const };
+      }
+      if (item.kind === "assistant_message" && item.streaming) {
+        changed = true;
+        return { ...item, streaming: false };
+      }
+      if (item.kind === "tool_call" && item.status === "running") {
+        changed = true;
+        return { ...item, status: "canceled" as const };
+      }
+      if (item.kind === "compaction" && item.status === "loading") {
+        changed = true;
+        return { ...item, status: "completed" as const };
+      }
+      return item;
+    });
+    settledItems = changed ? next : items;
+  }
+
   // Preserve any in-flight optimistic user messages not yet echoed in the snapshot.
+  const finalItems = [...settledItems];
   for (const pending of previousOptimistic) {
     if (pending.clientMessageId && seenClientIds.has(pending.clientMessageId)) continue;
     if (seenUserBodies.has(pending.body)) continue;
-    items.push(pending);
+    finalItems.push(pending);
   }
 
   return {
     epoch: snapshot.epoch,
     maxSeq: snapshot.window.maxSeq,
-    items,
+    items: finalItems,
     isTurnActive,
     activeTurnId,
   };
@@ -515,11 +589,7 @@ export function applyTimelineStreamEvent(
   }
   if (inner.type === "error") {
     return {
-      state: {
-        ...state,
-        isTurnActive: false,
-        items: settleThoughtsAndStreaming(state.items, true),
-      },
+      state: settleTimelineState(state, "canceled"),
       needsRefetch: true,
     };
   }
@@ -541,19 +611,38 @@ export function applyTimelineStreamEvent(
 
   switch (event.type) {
     case "turn_started": {
+      const nextTurnId = event.turnId ?? state.activeTurnId;
+      const shouldSettlePriorTools =
+        !state.isTurnActive || Boolean(event.turnId && state.activeTurnId && event.turnId !== state.activeTurnId);
       return {
         state: {
           ...state,
           epoch: nextEpoch,
           maxSeq: nextMaxSeq,
           isTurnActive: true,
-          activeTurnId: event.turnId ?? state.activeTurnId,
-          items: settleThoughtsAndStreaming(state.items, true),
+          activeTurnId: nextTurnId,
+          items: settleThoughtsAndStreaming(
+            state.items,
+            true,
+            shouldSettlePriorTools ? "canceled" : undefined,
+          ),
         },
         needsRefetch: false,
       };
     }
-    case "turn_completed":
+    case "turn_completed": {
+      return {
+        state: {
+          ...state,
+          epoch: nextEpoch,
+          maxSeq: nextMaxSeq,
+          isTurnActive: false,
+          activeTurnId: null,
+          items: settleThoughtsAndStreaming(state.items, true, "completed"),
+        },
+        needsRefetch: false,
+      };
+    }
     case "turn_canceled": {
       return {
         state: {
@@ -562,13 +651,13 @@ export function applyTimelineStreamEvent(
           maxSeq: nextMaxSeq,
           isTurnActive: false,
           activeTurnId: null,
-          items: settleThoughtsAndStreaming(state.items, true),
+          items: settleThoughtsAndStreaming(state.items, true, "canceled"),
         },
         needsRefetch: false,
       };
     }
     case "turn_failed": {
-      const settled = settleThoughtsAndStreaming(state.items, true);
+      const settled = settleThoughtsAndStreaming(state.items, true, "canceled");
       const errItem: SidechatNotificationItem = {
         kind: "notification",
         id: `turn_err:${seq ?? Date.now()}`,

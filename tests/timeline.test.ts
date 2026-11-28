@@ -7,6 +7,7 @@ import {
   extractPromptOutline,
   fromTimelineSnapshot,
   projectTimelineRows,
+  settleTimelineState,
 } from "../shared/timeline";
 
 test("streaming reasoning and assistant_message chunks concatenate and settle cleanly", () => {
@@ -589,4 +590,242 @@ test("showActions never appears mid-turn or on intermediate assistant narration 
       assert.equal(r.showActions, false);
     }
   }
+});
+
+test("canceling or stopping an active turn settles running tool calls so collapsed groups stop showing Working", () => {
+  let state = appendOptimisticUserMessage(createEmptyTimelineState(), {
+    text: "Run full audit",
+    clientMessageId: "c-stop",
+    timestamp: "2026-11-28T13:00:00Z",
+  });
+
+  state = applyTimelineStreamEvent(state, {
+    agentId: "a1",
+    seq: 1,
+    epoch: "e1",
+    timestamp: "2026-11-28T13:00:01Z",
+    event: {
+      type: "timeline",
+      provider: "claude",
+      turnId: "t1",
+      item: { type: "reasoning", text: "Checking repository files" },
+    },
+  }).state;
+
+  state = applyTimelineStreamEvent(state, {
+    agentId: "a1",
+    seq: 2,
+    epoch: "e1",
+    timestamp: "2026-11-28T13:00:02Z",
+    event: {
+      type: "timeline",
+      provider: "claude",
+      turnId: "t1",
+      item: {
+        type: "tool_call",
+        callId: "call-1",
+        name: "Read",
+        status: "running",
+        error: null,
+        detail: { type: "read", filePath: "shared/timeline.ts" },
+      },
+    },
+  }).state;
+
+  // While running, collapsed tool_group is loading ("Working · ...")
+  const runningRows = projectTimelineRows(state.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: state.isTurnActive,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const runningGroup = runningRows.find((r) => r.kind === "tool_group");
+  assert.ok(runningGroup && runningGroup.kind === "tool_group");
+  assert.equal(runningGroup.isLoading, true);
+
+  // 1. Manual stop via settleTimelineState
+  const stoppedState = settleTimelineState(state, "canceled");
+  assert.equal(stoppedState.isTurnActive, false);
+  const stoppedTool = stoppedState.items.find((i) => i.kind === "tool_call");
+  assert.ok(stoppedTool && stoppedTool.kind === "tool_call");
+  assert.equal(stoppedTool.status, "canceled");
+  const stoppedRows = projectTimelineRows(stoppedState.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: stoppedState.isTurnActive,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const stoppedGroup = stoppedRows.find((r) => r.kind === "tool_group");
+  assert.ok(stoppedGroup && stoppedGroup.kind === "tool_group");
+  assert.equal(stoppedGroup.isLoading, false);
+  assert.equal(stoppedGroup.activeStepLabel, null);
+
+  // 2. Stream turn_canceled event
+  const canceledState = applyTimelineStreamEvent(state, {
+    agentId: "a1",
+    seq: 3,
+    epoch: "e1",
+    timestamp: "2026-11-28T13:00:03Z",
+    event: { type: "turn_canceled", provider: "claude", turnId: "t1" },
+  }).state;
+  assert.equal(canceledState.isTurnActive, false);
+  const canceledTool = canceledState.items.find((i) => i.kind === "tool_call");
+  assert.ok(canceledTool && canceledTool.kind === "tool_call");
+  assert.equal(canceledTool.status, "canceled");
+  const canceledRows = projectTimelineRows(canceledState.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: canceledState.isTurnActive,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const canceledGroup = canceledRows.find((r) => r.kind === "tool_group");
+  assert.ok(canceledGroup && canceledGroup.kind === "tool_group");
+  assert.equal(canceledGroup.isLoading, false);
+});
+
+test("fromTimelineSnapshot settles stale running tool calls when agent is idle or in a newer turn", () => {
+  // Case A: Agent is idle after reload/stop, but persisted snapshot still has status: "running"
+  const idleSnapshot = fromTimelineSnapshot({
+    epoch: "e-stop",
+    window: { minSeq: 0, maxSeq: 3, nextSeq: 4 },
+    agent: { status: "idle", activeTurn: null },
+    entries: [
+      {
+        provider: "claude",
+        turnId: "t1",
+        timestamp: "2026-11-28T13:10:00Z",
+        seqStart: 1,
+        seqEnd: 1,
+        item: { type: "user_message", text: "Search codebase" },
+      },
+      {
+        provider: "claude",
+        turnId: "t1",
+        timestamp: "2026-11-28T13:10:01Z",
+        seqStart: 2,
+        seqEnd: 2,
+        item: { type: "reasoning", text: "Running grep" },
+      },
+      {
+        provider: "claude",
+        turnId: "t1",
+        timestamp: "2026-11-28T13:10:02Z",
+        seqStart: 3,
+        seqEnd: 3,
+        item: {
+          type: "tool_call",
+          callId: "grep-1",
+          name: "Grep",
+          status: "running",
+          error: null,
+          detail: { type: "search", query: "Working" },
+        },
+      },
+    ],
+  });
+
+  const idleTool = idleSnapshot.items.find((i) => i.kind === "tool_call");
+  assert.ok(idleTool && idleTool.kind === "tool_call");
+  assert.equal(idleTool.status, "canceled");
+  const idleRows = projectTimelineRows(idleSnapshot.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: idleSnapshot.isTurnActive,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const idleGroup = idleRows.find((r) => r.kind === "tool_group");
+  assert.ok(idleGroup && idleGroup.kind === "tool_group");
+  assert.equal(idleGroup.isLoading, false);
+
+  // Case B: New turn t2 is running, while interrupted turn t1 still had a running tool_call
+  const nextTurnSnapshot = fromTimelineSnapshot({
+    epoch: "e-stop",
+    window: { minSeq: 0, maxSeq: 6, nextSeq: 7 },
+    agent: { status: "running", activeTurn: { turnId: "t2", startedAt: "2026-11-28T13:11:00Z" } },
+    entries: [
+      {
+        provider: "claude",
+        turnId: "t1",
+        timestamp: "2026-11-28T13:10:00Z",
+        seqStart: 1,
+        seqEnd: 1,
+        item: { type: "user_message", text: "First prompt (aborted)" },
+      },
+      {
+        provider: "claude",
+        turnId: "t1",
+        timestamp: "2026-11-28T13:10:01Z",
+        seqStart: 2,
+        seqEnd: 2,
+        item: { type: "reasoning", text: "Checking" },
+      },
+      {
+        provider: "claude",
+        turnId: "t1",
+        timestamp: "2026-11-28T13:10:02Z",
+        seqStart: 3,
+        seqEnd: 3,
+        item: {
+          type: "tool_call",
+          callId: "old-call",
+          name: "Read",
+          status: "running",
+          error: null,
+          detail: { type: "read", filePath: "old.ts" },
+        },
+      },
+      {
+        provider: "claude",
+        turnId: "t2",
+        timestamp: "2026-11-28T13:11:00Z",
+        seqStart: 4,
+        seqEnd: 4,
+        item: { type: "user_message", text: "Second prompt (active)" },
+      },
+      {
+        provider: "claude",
+        turnId: "t2",
+        timestamp: "2026-11-28T13:11:01Z",
+        seqStart: 5,
+        seqEnd: 5,
+        item: { type: "reasoning", text: "Inspecting new file" },
+      },
+      {
+        provider: "claude",
+        turnId: "t2",
+        timestamp: "2026-11-28T13:11:02Z",
+        seqStart: 6,
+        seqEnd: 6,
+        item: {
+          type: "tool_call",
+          callId: "new-call",
+          name: "Read",
+          status: "running",
+          error: null,
+          detail: { type: "read", filePath: "new.ts" },
+        },
+      },
+    ],
+  });
+
+  const tools = nextTurnSnapshot.items.filter((i) => i.kind === "tool_call");
+  assert.equal(tools.length, 2);
+  assert.equal(tools[0].status, "canceled");
+  assert.equal(tools[1].status, "running");
+
+  const nextTurnRows = projectTimelineRows(nextTurnSnapshot.items, {
+    chatDisplay: "collapseTurns",
+    autoExpandReasoning: false,
+    isTurnActive: nextTurnSnapshot.isTurnActive,
+    expandedGroupIds: new Set(),
+    toggledItemIds: new Set(),
+  });
+  const groups = nextTurnRows.filter((r) => r.kind === "tool_group");
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].isLoading, false);
+  assert.equal(groups[1].isLoading, true);
 });
